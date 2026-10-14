@@ -1,0 +1,75 @@
+name: PR Quality
+permissions:
+  contents: read
+on:
+  workflow_dispatch:
+jobs:
+  gradle-wrapper-validation:
+    uses: ./.github/workflows/gradle-wrapper-validation.yml
+  quality:
+    needs: gradle-wrapper-validation
+    name: JDK ${{ matrix.java }} [${{ matrix.expander_leg }}]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - java: 11
+          os: macos-latest
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest-11-arm64
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+    - name: Set up JDK ${{ matrix.java }} and JDK 17
+      uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c   # v6.0.0
+      with:
+        java-version: |
+          ${{ matrix.java }}
+          17
+        distribution: 'zulu'
+        cache: 'gradle'
+    - name: Print JDK Versions
+      run: |
+        echo "Gradle will run on JDK 17:"
+        java -version
+        echo "JDK ${{ matrix.java }}:"
+        if [ -d "$JAVA_HOME_${{ matrix.java }}_${{ runner.arch }}" ]; then
+          "$JAVA_HOME_${{ matrix.java }}_${{ runner.arch }}/bin/java" -version
+        fi
+    - name: Set Gradle Environment
+      run: |
+        echo "GRADLE_OPTS=-Dorg.gradle.java.home=$JAVA_HOME" >> "$GITHUB_ENV"
+        mkdir -p "$HOME/.gradle"
+        echo "org.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java }}_${{ runner.arch }},JAVA_HOME_17_${{ runner.arch }}" >> "$HOME/.gradle/gradle.properties"
+    - name: Make gradlew Executable
+      run: chmod +x gradlew
+    - name: Documentation Linter
+      run: bash scripts/check-source-root.sh
+    - name: Gradle lockfiles validation
+      run: bash scripts/check-lockfiles.sh
+    - name: Clean Gradle project
+      run: ./gradlew --parallel clean
+    - name: Build with Gradle
+      run: ./gradlew --parallel -Pdependency.analysis.print.build.health=true 
+        quality
+    - name: Upload CheckStyle Results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      with:
+        name: checkstyle-results-${{ matrix.java }}
+        path: '**/build/reports/checkstyle/*.xml'
+    - name: Upload PMD Results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      with:
+        name: pmd-results-${{ matrix.java }}
+        path: '**/build/reports/pmd/*.xml'
+    - name: Upload SpotBugs Results
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+      with:
+        name: spotbugs-results-${{ matrix.java }}
+        path: '**/build/reports/spotbugs/*.xml'
+    timeout-minutes: 150
