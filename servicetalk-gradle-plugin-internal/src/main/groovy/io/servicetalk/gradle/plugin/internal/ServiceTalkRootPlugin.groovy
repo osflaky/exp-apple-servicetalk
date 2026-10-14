@@ -1,0 +1,93 @@
+/*
+ * Copyright © 2019 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.gradle.plugin.internal
+
+import org.gradle.api.JavaVersion
+import org.gradle.api.Project
+import org.gradle.api.tasks.javadoc.Javadoc
+
+import static io.servicetalk.gradle.plugin.internal.ProjectUtils.addQualityTask
+
+final class ServiceTalkRootPlugin extends ServiceTalkCorePlugin {
+  @Override
+  void apply(Project project) {
+    super.apply(project, false)
+
+    enforceCheckstyleRoot project
+    addJavadocAllTask project
+    addQualityTask project
+  }
+
+  private static void enforceCheckstyleRoot(Project project) {
+    project.configure(project) {
+      pluginManager.apply("base")
+      check.dependsOn checkstyleRoot
+    }
+  }
+
+  private static void addJavadocAllTask(Project project) {
+    project.configure(project) {
+      // Check if this build is being included in a composite build (--include-build)
+      if (gradle.parent != null) {
+        project.logger.lifecycle(
+            "Skipping 'javadocAll' task registration: build is running in composite mode (--include-build)")
+        return
+      }
+
+      def javadocAllTask = tasks.register("javadocAll", Javadoc) {
+        description = "Consolidate sub-project's Javadoc into a single location"
+        group = "documentation"
+        destinationDir = file("$buildDir/javadoc")
+        // Disable module directories to avoid "undefined" sub-folder bug in JDK11. See:
+        // - https://stackoverflow.com/questions/53732632/gradle-javadoc-search-redirects-to-undefined-url
+        // - https://bugs.openjdk.java.net/browse/JDK-8215291
+        if (JavaVersion.current().isJava11()) {
+          options.addBooleanOption('-no-module-directories', true)
+        }
+      }
+
+      gradle.projectsEvaluated {
+        javadocAllTask.configure {
+          // Create FileCollections for aggregation (avoids triggering configuration resolution)
+          def aggregatedSources = project.files()
+          def aggregatedClasspath = project.files()
+
+          subprojects.findAll {
+            !it.name.contains("examples")
+                // No need to generate javadoc for -jersey3/4 modules because they are copied from -jersey
+                && !it.name.contains("-jersey3-jakarta")
+                && !it.name.contains("-jersey4-jakarta")
+                // No need to generate javadoc for -jackson3 modules because they are copied from -jackson
+                && !it.name.endsWith("-jackson3")
+          }.each { prj ->
+            prj.tasks.withType(Javadoc).findAll {it.name.equals("javadoc")}.each { javadocTask ->
+              // Use .from and .files to eagerly resolve during configuration phase
+              aggregatedSources.from(javadocTask.source.files)
+              aggregatedClasspath.from(javadocTask.classpath.files)
+              // excludes/includes are Sets, safe to use +=
+              excludes += javadocTask.excludes
+              includes += javadocTask.includes
+              dependsOn javadocTask
+            }
+          }
+          // Set the aggregated collections on the task
+          source = aggregatedSources
+          classpath = aggregatedClasspath
+        }
+      }
+    }
+  }
+}

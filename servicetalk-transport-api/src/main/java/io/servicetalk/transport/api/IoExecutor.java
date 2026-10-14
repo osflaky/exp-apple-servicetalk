@@ -1,0 +1,79 @@
+/*
+ * Copyright © 2018 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.transport.api;
+
+import io.servicetalk.concurrent.Cancellable;
+import io.servicetalk.concurrent.api.Executor;
+
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+
+/**
+ * {@link Executor} that handles network transport I/O operations.
+ * <p> This executor is specifically designed for network-related I/O operations such as socket connections.
+ * It is not intended for general I/O operations or general offloading work.
+ */
+public interface IoExecutor extends Executor {
+
+    /**
+     * Determine if <a href="https://en.wikipedia.org/wiki/Unix_domain_socket">Unix Domain Sockets</a> are supported.
+     *
+     * @return {@code true} if <a href="https://en.wikipedia.org/wiki/Unix_domain_socket">Unix Domain Sockets</a> are
+     * supported.
+     */
+    boolean isUnixDomainSocketSupported();
+
+    /**
+     * Determine if fd addresses are supported.
+     *
+     * @return {@code true} if supported
+     */
+    boolean isFileDescriptorSocketAddressSupported();
+
+    /**
+     * Determine if threads used by this {@link IoExecutor} are marked with {@link IoThreadFactory.IoThread} interface.
+     *
+     * @return {@code true} if supported
+     * @see IoThreadFactory.IoThread
+     */
+    boolean isIoThreadSupported();
+
+    /**
+     * Returns a boolean supplier, if this IoExecutor supports {@link IoThreadFactory.IoThread} markers, that
+     * conditionally recommends offloading if the current thread is a network I/O thread. If this IoExecutor does not
+     * support IoThread marker interface then the boolean supplier will always return {@code true}.
+     *
+     * @return a Boolean supplier to recommend offloading appropriately based upon IoExecutor configuration.
+     */
+    default BooleanSupplier shouldOffloadSupplier() {
+        return isIoThreadSupported() ?
+                IoThreadFactory.IoThread::currentThreadIsIoThread : // offload if on IO thread
+                Boolean.TRUE::booleanValue; // unconditional
+    }
+
+    // FIXME: 0.43 - remove default method
+    @Override
+    default Cancellable execute(Runnable task) throws RejectedExecutionException {
+        throw new UnsupportedOperationException("No existing IoExecutor implementations require this default");
+    }
+
+    // FIXME: 0.43 - remove default method
+    @Override
+    default Cancellable schedule(Runnable task, long delay, TimeUnit unit) throws RejectedExecutionException {
+        throw new UnsupportedOperationException("No existing IoExecutor implementations require this default");
+    }
+}

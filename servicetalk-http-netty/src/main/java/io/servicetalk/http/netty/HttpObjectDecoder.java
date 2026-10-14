@@ -1,0 +1,1174 @@
+/*
+ * Copyright © 2018-2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Copyright 2012 The Netty Project
+ *
+ * The Netty Project licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.buffer.api.Buffer;
+import io.servicetalk.http.api.HttpHeaders;
+import io.servicetalk.http.api.HttpHeadersFactory;
+import io.servicetalk.http.api.HttpMetaData;
+import io.servicetalk.http.api.HttpProtocolVersion;
+import io.servicetalk.http.api.HttpRequestMetaData;
+import io.servicetalk.http.api.HttpResponseMetaData;
+import io.servicetalk.transport.netty.internal.ByteToMessageDecoder;
+import io.servicetalk.transport.netty.internal.CloseHandler;
+import io.servicetalk.transport.netty.internal.CloseHandler.DiscardFurtherInboundEvent;
+import io.servicetalk.utils.internal.IllegalCharacterException;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandler;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.PrematureChannelClosureException;
+import io.netty.handler.codec.TooLongFrameException;
+import io.netty.handler.codec.http.HttpExpectationFailedEvent;
+import io.netty.util.AsciiString;
+import io.netty.util.ByteProcessor;
+
+import java.util.Iterator;
+import javax.annotation.Nullable;
+
+import static io.netty.handler.codec.http.HttpConstants.COLON;
+import static io.netty.handler.codec.http.HttpConstants.CR;
+import static io.netty.handler.codec.http.HttpConstants.HT;
+import static io.netty.handler.codec.http.HttpConstants.LF;
+import static io.netty.handler.codec.http.HttpConstants.SP;
+import static io.netty.util.ByteProcessor.FIND_LF;
+import static io.servicetalk.buffer.api.CharSequences.emptyAsciiString;
+import static io.servicetalk.buffer.api.CharSequences.newAsciiString;
+import static io.servicetalk.buffer.api.CharSequences.regionMatches;
+import static io.servicetalk.buffer.netty.BufferUtils.newBufferFrom;
+import static io.servicetalk.concurrent.internal.FlowControlUtils.addWithOverflowProtection;
+import static io.servicetalk.http.api.HeaderUtils.isConnectionClose;
+import static io.servicetalk.http.api.HeaderUtils.isTransferEncodingChunked;
+import static io.servicetalk.http.api.HttpHeaderNames.CONNECTION;
+import static io.servicetalk.http.api.HttpHeaderNames.CONTENT_LENGTH;
+import static io.servicetalk.http.api.HttpHeaderNames.SEC_WEBSOCKET_KEY1;
+import static io.servicetalk.http.api.HttpHeaderNames.SEC_WEBSOCKET_KEY2;
+import static io.servicetalk.http.api.HttpHeaderNames.SEC_WEBSOCKET_LOCATION;
+import static io.servicetalk.http.api.HttpHeaderNames.SEC_WEBSOCKET_ORIGIN;
+import static io.servicetalk.http.api.HttpHeaderNames.TRANSFER_ENCODING;
+import static io.servicetalk.http.api.HttpHeaderNames.UPGRADE;
+import static io.servicetalk.http.api.HttpHeaderValues.CHUNKED;
+import static io.servicetalk.http.api.HttpHeaderValues.CLOSE;
+import static io.servicetalk.http.api.HttpProtocolVersion.HTTP_1_0;
+import static io.servicetalk.http.api.HttpProtocolVersion.HTTP_1_1;
+import static io.servicetalk.http.api.HttpRequestMethod.GET;
+import static io.servicetalk.http.api.HttpResponseStatus.SWITCHING_PROTOCOLS;
+import static io.servicetalk.http.netty.H1ProtocolConfigBuilder.DEFAULT_MAX_TOTAL_HEADER_FIELDS_LENGTH_PROPERTY;
+import static io.servicetalk.http.netty.HeaderUtils.removeTransferEncodingChunked;
+import static io.servicetalk.http.netty.HttpKeepAlive.shouldClose;
+import static io.servicetalk.utils.internal.NumberUtils.ensurePositive;
+import static java.lang.Character.isISOControl;
+import static java.lang.Character.isWhitespace;
+import static java.lang.Long.parseUnsignedLong;
+import static java.lang.Math.min;
+import static java.nio.charset.StandardCharsets.US_ASCII;
+import static java.util.Objects.requireNonNull;
+
+abstract class HttpObjectDecoder<T extends HttpMetaData> extends ByteToMessageDecoder {
+    private static final long HTTP_VERSION_FORMAT = 0x485454502f312e00L;    // HEX representation of "HTTP/1.x"
+    private static final long HTTP_VERSION_MASK = 0xffffffffffffff00L;
+    /**
+     * TLS record content type for Handshake, as defined in the TLS record layer specification.
+     * This value is the same across TLS 1.0 (<a href="https://tools.ietf.org/html/rfc2246">RFC 2246</a>)
+     * through TLS 1.3 (<a href="https://tools.ietf.org/html/rfc8446">RFC 8446</a>).
+     */
+    private static final byte TLS_CONTENT_TYPE_HANDSHAKE = 0x16;
+    private static final ByteProcessor SKIP_PREFACING_CRLF = value -> {
+        if (isVCHAR(value)) {
+            return false;
+        }
+        if (value == CR || value == LF) {
+            return true;
+        }
+        if (value == TLS_CONTENT_TYPE_HANDSHAKE) {
+            throw new StacklessDecoderException(
+                    "Received a TLS/SSL record on a non-TLS HTTP connection. " +
+                    "This likely indicates a client attempting to connect via HTTPS to a plaintext HTTP port",
+                    new IllegalCharacterException(value, "CR (0x0d), LF (0x0a)"));
+        }
+        throw new StacklessDecoderException("Invalid preface character before the start-line of the HTTP message",
+                new IllegalCharacterException(value, "CR (0x0d), LF (0x0a)"));
+    };
+    private static final ByteProcessor FIND_WS = value -> !isWS(value);
+    private static final ByteProcessor FIND_VCHAR_END = value -> {
+        if (isVCHAR(value)) {
+            return true;
+        }
+        if (isWS(value)) {
+            return false;
+        }
+        throw new IllegalCharacterException(value, "VCHAR (0x21-0x7e)");
+    };
+    private static final ByteProcessor FIND_COLON = value -> value != COLON;
+    private static final ByteProcessor FIND_FIELD_VALUE = value -> {
+        // Skip preceded and/or followed OWS
+        if (isWS(value)) {
+            return true;
+        }
+        if (isVCHAR(value) || isObsText(value)) {
+            return false;
+        }
+        throw new IllegalCharacterException(value, "HTAB / SP / VCHAR / obs-text");
+    };
+
+    private static final int MAX_HEX_CHARS_FOR_LONG = 16; // 0x7FFFFFFFFFFFFFFF == Long.MAX_INT
+    private static final int CHUNK_DELIMETER_SIZE = 2; // CRLF
+    private static final int MAX_ALLOWED_CHARS_TO_SKIP = CHUNK_DELIMETER_SIZE * 2; // Max allowed prefacing CRLF to skip
+    private static final int MAX_ALLOWED_CHARS_TO_SKIP_PLUS_ONE = MAX_ALLOWED_CHARS_TO_SKIP + 1;
+
+    private final int maxStartLineLength;
+    private final int maxHeaderFieldLength;
+    private final int maxTotalHeaderFieldsLength;
+
+    private final HttpHeadersFactory headersFactory;
+    private final CloseHandler closeHandler;
+    private final boolean allowPrematureClosureBeforePayloadBody;
+    /**
+     * <a href="https://tools.ietf.org/html/rfc7230#section-3.5>HTTP/1.x Message Parsing Robustness</a>
+     * <pre>
+     *   Although the line terminator for the start-line and header fields is
+     *   the sequence CRLF, a recipient MAY recognize a single LF as a line
+     *   terminator and ignore any preceding CR.
+     * </pre>
+     */
+    private final boolean allowLFWithoutCR;
+    @Nullable
+    private T message;
+    @Nullable
+    private HttpHeaders trailer;
+    private long chunkSize;
+    private int cumulationIndex = -1;
+    private long contentLength = Long.MIN_VALUE;
+    /**
+     * Line being parsed. Used for reporting location in exceptions
+     */
+    private int parsingLine;
+    private int currentHeadersBlockLength;
+
+    /**
+     * The internal state of {@link HttpObjectDecoder}.
+     */
+    private enum State {
+        SKIP_CONTROL_CHARS,
+        READ_INITIAL,
+        READ_HEADER,
+        READ_VARIABLE_LENGTH_CONTENT,
+        READ_FIXED_LENGTH_CONTENT,
+        READ_CHUNK_SIZE,
+        READ_CHUNKED_CONTENT,
+        READ_CHUNK_DELIMITER,
+        READ_CHUNK_FOOTER,
+        UPGRADED
+    }
+
+    private State currentState = State.SKIP_CONTROL_CHARS;
+    private int skippedControls;
+
+    /**
+     * Creates a new instance with the specified parameters.
+     */
+    HttpObjectDecoder(final ByteBufAllocator alloc, final HttpHeadersFactory headersFactory,
+                      final int maxStartLineLength, final int maxHeaderFieldLength,
+                      final int maxTotalHeaderFieldsLength,
+                      final boolean allowPrematureClosureBeforePayloadBody, final boolean allowLFWithoutCR,
+                      final CloseHandler closeHandler) {
+        super(alloc);
+        this.closeHandler = requireNonNull(closeHandler);
+        this.headersFactory = requireNonNull(headersFactory);
+        this.maxStartLineLength = ensurePositive(maxStartLineLength, "maxStartLineLength");
+        this.maxHeaderFieldLength = ensurePositive(maxHeaderFieldLength, "maxHeaderFieldLength");
+        this.maxTotalHeaderFieldsLength = ensurePositive(maxTotalHeaderFieldsLength, "maxTotalHeaderFieldsLength");
+        this.allowPrematureClosureBeforePayloadBody = allowPrematureClosureBeforePayloadBody;
+        this.allowLFWithoutCR = allowLFWithoutCR;
+    }
+
+    final HttpHeadersFactory headersFactory() {
+        return headersFactory;
+    }
+
+    /**
+     * Determine if this {@link HttpObjectDecoder} is responsible for decoding requests or not. Behavior may differ
+     * if a request/response is being parsed around request/response termination. See
+     * <a href="https://tools.ietf.org/html/rfc7230.html#section-3.3.3">RFC 7230, section 3.3.3</a> for more details.
+     * @return {@code true} if requests are being decoded.
+     */
+    protected abstract boolean isDecodingRequest();
+
+    /**
+     * When the initial line is expected, and a buffer is received which does not contain a CRLF that terminates the
+     * initial line.
+     * @param ctx the {@link ChannelHandlerContext}.
+     * @param buffer the {@link Buffer} received.
+     */
+    protected abstract void handlePartialInitialLine(ChannelHandlerContext ctx, ByteBuf buffer);
+
+    /**
+     * Create a new {@link HttpMetaData} because a new request/response
+     * <a href="https://tools.ietf.org/html/rfc7230.html#section-3.1">start line</a> has been parsed.
+     *
+     * @param buffer The {@link ByteBuf} which contains a start line
+     * @param firstStart Start index of the first item in the start line
+     * @param firstLength Length of the first item in the start line
+     * @param secondStart Start index of the second item in the start line
+     * @param secondLength Length of the second item in the start line
+     * @param thirdStart Start index of the third item in the start line
+     * @param thirdLength Length of the third item in the start line, a negative value indicates the absence of the
+     * third component
+     * @return a new {@link HttpMetaData} that represents the parsed start line
+     */
+    protected abstract T createMessage(ByteBuf buffer, int firstStart, int firstLength,
+                                       int secondStart, int secondLength,
+                                       int thirdStart, int thirdLength);
+
+    @Override
+    protected final void decode(final ChannelHandlerContext ctx, final ByteBuf buffer) {
+        switch (currentState) {
+            case SKIP_CONTROL_CHARS: {
+                if (!skipControlCharacters(buffer)) {
+                    return;
+                }
+                currentState = State.READ_INITIAL;
+            }
+            // fallthrough to the next state
+            case READ_INITIAL: {
+                final long longLFIndex = findCRLF(buffer, maxStartLineLength, allowLFWithoutCR);
+                if (longLFIndex < 0) {
+                    handlePartialInitialLine(ctx, buffer);
+                    return;
+                }
+
+                // Parse the initial line:
+                // https://tools.ietf.org/html/rfc7230#section-3.1.1
+                // request-line = method SP request-target SP HTTP-version CRLF
+                // https://tools.ietf.org/html/rfc7230#section-3.1.2
+                // status-line = HTTP-version SP status-code SP reason-phrase CRLF
+                final int lfIndex = crlfIndex(longLFIndex);
+                final int nonControlIndex = crlfBeforeIndex(longLFIndex);
+                final int aStart = buffer.readerIndex();    // We already skipped all preface control chars
+                // Look only for a WS, other checks will be done later by request/response decoder
+                final int aEnd = buffer.forEachByte(aStart + 1, nonControlIndex - aStart, FIND_WS);
+                if (aEnd < 0) {
+                    throw newStartLineError("first");
+                }
+
+                final int bStart = aEnd + 1;    // Expect a single WS
+                int bEnd;
+                try {
+                    bEnd = buffer.forEachByte(bStart, nonControlIndex - bStart + 1,
+                            isDecodingRequest() ? FIND_VCHAR_END : FIND_WS);
+                } catch (IllegalCharacterException cause) {
+                    throw new StacklessDecoderException(
+                            "Invalid start-line: HTTP request-target contains an illegal character", cause);
+                }
+                if (bEnd < 0) {
+                    if (isDecodingRequest()) {
+                        throw newStartLineError("second");
+                    } else {    // Response can be without a reason-phrase: "HTTP/1.1 200\r\n"
+                        bEnd = nonControlIndex + 1;
+                    }
+                }
+                if (bEnd == bStart) {   // Happens when there are two SP next to each other
+                    throw new DecoderException("Invalid start-line: incorrect number of components, cannot find the " +
+                            (isDecodingRequest() ? "request-target" : "status-code") + ", expected: " +
+                            (isDecodingRequest() ? "method SP request-target SP HTTP-version" :
+                                    "HTTP-version SP status-code SP reason-phrase"));
+                }
+
+                final int cStart = bEnd + 1;    // Expect a single WS
+                // Other checks will be done later by request/response decoder
+                final int cLength = cStart > nonControlIndex ? 0 : nonControlIndex - cStart + 1;
+
+                // Account for the start line in the total header fields limit
+                ensureTotalHeaderFieldsLimit("headers", lfIndex - aStart + 1);  // Include CRLF into account
+
+                // Consume the initial line bytes from the buffer.
+                consumeCRLF(buffer, lfIndex);
+
+                message = createMessage(buffer, aStart, aEnd - aStart, bStart, bEnd - bStart, cStart, cLength);
+                currentState = State.READ_HEADER;
+                if (!isInterim(message)) {
+                    // Don't notify CloseHandler if it's interim 100 (Continue) response
+                    closeHandler.protocolPayloadBeginInbound(ctx);
+                }
+            }
+            // fallthrough to the next state
+            case READ_HEADER: {
+                State nextState = readHeaders(buffer);
+                if (nextState == null) {
+                    return;
+                }
+                assert message != null;
+                if (shouldClose(message)) {
+                    closeHandler.protocolClosingInbound(ctx);
+                }
+                onMetaDataRead(ctx, message);
+                currentState = nextState;
+                switch (nextState) {
+                    case SKIP_CONTROL_CHARS:
+                        // fast-path
+                        // No content is expected.
+                        if (!isInterim(message)) {
+                            // We don't expose 1xx "interim responses" [2] to the user, and discard them to make way for
+                            // the "real" response.
+                            //
+                            // A client MUST be able to parse one or more 1xx responses received
+                            //    prior to a final response, even if the client does not expect one.  A
+                            //    user agent MAY ignore unexpected 1xx responses. [2]
+                            // 1xx responses are terminated by the first empty line after
+                            //    the status-line (the empty line signaling the end of the header
+                            //    section). [1]
+                            // [1] https://tools.ietf.org/html/rfc7231#section-6.2
+                            ctx.fireChannelRead(message);
+                            closeHandler.protocolPayloadEndInbound(ctx);
+                        }
+                        resetNow();
+                        return;
+                    case READ_CHUNK_SIZE:
+                        // Chunked encoding - generate HttpMessage first.  HttpChunks will follow.
+                        ctx.fireChannelRead(message);
+                        return;
+                    default:
+                        // <a href="https://tools.ietf.org/html/rfc7230#section-3.3.3">RFC 7230, 3.3.3</a> states that
+                        // if a request does not have either a transfer-encoding or a content-length header then the
+                        // message body length is 0. However for a response the body length is the number of octets
+                        // received prior to the server closing the connection. So we treat this as variable length
+                        // chunked encoding.
+                        long contentLength = contentLength();
+                        if (contentLength == 0 || contentLength == -1 && isDecodingRequest()) {
+                            ctx.fireChannelRead(message);
+                            closeHandler.protocolPayloadEndInbound(ctx);
+                            resetNow();
+                            return;
+                        }
+
+                        assert nextState == State.READ_FIXED_LENGTH_CONTENT ||
+                                nextState == State.READ_VARIABLE_LENGTH_CONTENT;
+
+                        ctx.fireChannelRead(message);
+
+                        if (nextState == State.READ_FIXED_LENGTH_CONTENT) {
+                            // chunkSize will be decreased as the READ_FIXED_LENGTH_CONTENT state reads data chunk by
+                            // chunk.
+                            chunkSize = contentLength;
+                        }
+
+                        // We return here, this forces decode to be called again where we will decode the content
+                        return;
+                }
+                // fall-through
+            }
+            case READ_VARIABLE_LENGTH_CONTENT: {
+                // Keep reading data as a chunk until the end of connection is reached.
+                int toRead = buffer.readableBytes();
+                if (toRead > 0) {
+                    onDataSeen();
+                    ByteBuf content = buffer.readRetainedSlice(toRead);
+                    cumulationIndex = buffer.readerIndex();
+                    ctx.fireChannelRead(newBufferFrom(content));
+                }
+                return;
+            }
+            case READ_FIXED_LENGTH_CONTENT: {
+                int toRead = buffer.readableBytes();
+
+                // Check if the buffer is readable first as we use the readable byte count
+                // to create the HttpChunk. This is needed as otherwise we may end up with
+                // create a HttpChunk instance that contains an empty buffer and so is
+                // handled like it is the last HttpChunk.
+                //
+                // See https://github.com/netty/netty/issues/433
+                if (toRead == 0) {
+                    return;
+                }
+                onDataSeen();
+
+                if (toRead > chunkSize) {
+                    toRead = (int) chunkSize;
+                }
+                ByteBuf content = buffer.readRetainedSlice(toRead);
+                chunkSize -= toRead;
+                cumulationIndex = buffer.readerIndex();
+
+                if (chunkSize == 0) {
+                    // Read all content.
+                    // https://tools.ietf.org/html/rfc7230.html#section-4.1
+                    // This is not chunked encoding so there will not be any trailers.
+                    ctx.fireChannelRead(newBufferFrom(content));
+                    closeHandler.protocolPayloadEndInbound(ctx);
+                    resetNow();
+                } else {
+                    ctx.fireChannelRead(newBufferFrom(content));
+                }
+                return;
+            }
+            // everything else after this point takes care of reading chunked content. basically, read chunk size,
+            // read chunk, read and ignore the CRLF and repeat until 0
+            case READ_CHUNK_SIZE: {
+                final long longLFIndex = findCRLF(buffer, MAX_HEX_CHARS_FOR_LONG, false);
+                if (longLFIndex < 0) {
+                    return;
+                }
+                onDataSeen();
+                final int lfIndex = crlfIndex(longLFIndex);
+                int chunkSize = getChunkSize(buffer, lfIndex);
+                consumeCRLF(buffer, lfIndex);
+                this.chunkSize = chunkSize;
+                if (chunkSize == 0) {
+                    currentState = State.READ_CHUNK_FOOTER;
+                    return;
+                }
+                currentState = State.READ_CHUNKED_CONTENT;
+            }
+            // fallthrough to the next state
+            case READ_CHUNKED_CONTENT: {
+                final int toRead = (int) min(chunkSize, buffer.readableBytes());
+                if (toRead == 0) {
+                    return;
+                }
+                onDataSeen();
+                Buffer chunk = newBufferFrom(buffer.readRetainedSlice(toRead));
+                chunkSize -= toRead;
+                cumulationIndex = buffer.readerIndex();
+
+                ctx.fireChannelRead(chunk);
+
+                if (chunkSize != 0) {
+                    return;
+                }
+                currentState = State.READ_CHUNK_DELIMITER;
+            }
+            // fallthrough to the next state
+            case READ_CHUNK_DELIMITER: {
+                // Read the chunk delimiter
+                final long longLFIndex = findCRLF(buffer, CHUNK_DELIMETER_SIZE, false);
+                if (longLFIndex < 0) {
+                    return;
+                }
+                consumeCRLF(buffer, crlfIndex(longLFIndex));
+                currentState = State.READ_CHUNK_SIZE;
+                break;
+            }
+            case READ_CHUNK_FOOTER: {
+                HttpHeaders trailer = readTrailingHeaders(buffer);
+                if (trailer == null) {
+                    return;
+                }
+                if (!trailer.isEmpty()) {
+                    ctx.fireChannelRead(trailer);
+                }
+                closeHandler.protocolPayloadEndInbound(ctx);
+                resetNow();
+                return;
+            }
+            case UPGRADED: {
+                int readableBytes = buffer.readableBytes();
+                if (readableBytes > 0) {
+                    // Keep on consuming as otherwise we may trigger an DecoderException,
+                    // other handler will replace this codec with the upgraded protocol codec to
+                    // take the traffic over at some point then.
+                    // See https://github.com/netty/netty/issues/2173
+                    ByteBuf opaquePayload = buffer.readBytes(readableBytes);
+                    cumulationIndex = buffer.readerIndex();
+                    // TODO(scott): revisit how upgrades are going to be done. Do we use Netty buffers or not?
+                    ctx.fireChannelRead(opaquePayload);
+                }
+                break;
+            }
+            default:
+                throw new Error();
+        }
+    }
+
+    @Override
+    protected final ByteBuf swapAndCopyCumulation(final ByteBuf cumulation, final ByteBuf in) {
+        final int readerIndex = cumulation.readerIndex();
+        final ByteBuf newCumulation = super.swapAndCopyCumulation(cumulation, in);
+        cumulationIndex -= readerIndex - newCumulation.readerIndex();
+        return newCumulation;
+    }
+
+    @Override
+    protected final void cumulationReset() {
+        cumulationIndex = -1;
+    }
+
+    @Override
+    protected final void decodeLast(final ChannelHandlerContext ctx, final ByteBuf in) throws Exception {
+        super.decodeLast(ctx, in);
+
+        // Handle the last unfinished message.
+        if (message != null) {
+            boolean chunked = isTransferEncodingChunked(message.headers());
+            if (!in.isReadable() && (
+                    (currentState == State.READ_VARIABLE_LENGTH_CONTENT && !chunked) ||
+                    (currentState == State.READ_CHUNK_SIZE && chunked && allowPrematureClosureBeforePayloadBody))) {
+                // End of connection.
+                closeHandler.protocolPayloadEndInbound(ctx);
+                resetNow();
+                return;
+            }
+
+            if (currentState == State.READ_HEADER) {
+                // If we are still in the state of reading headers we need to create a new invalid message that
+                // signals that the connection was closed before we received the headers.
+                ctx.fireExceptionCaught(
+                        new PrematureChannelClosureException("Connection closed before received headers"));
+                resetNow();
+                return;
+            }
+
+            // Check if the closure of the connection signifies the end of the content.
+            boolean prematureClosure;
+            if (isDecodingRequest() || chunked) {
+                // The last request did not wait for a response.
+                prematureClosure = true;
+            } else {
+                // Compare the length of the received content and the 'Content-Length' header.
+                // If the 'Content-Length' header is absent, the length of the content is determined by the end of the
+                // connection, so it is perfectly fine.
+                prematureClosure = contentLength() > 0;
+            }
+
+            if (!prematureClosure) {
+                closeHandler.protocolPayloadEndInbound(ctx);
+            }
+            resetNow();
+        }
+    }
+
+    @Override
+    public final void userEventTriggered(final ChannelHandlerContext ctx, final Object evt) throws Exception {
+        if (evt instanceof HttpExpectationFailedEvent) {
+            switch (currentState) {
+                case READ_FIXED_LENGTH_CONTENT:
+                case READ_VARIABLE_LENGTH_CONTENT:
+                case READ_CHUNK_SIZE:
+                    // TODO(scott): this was previously reset, which delayed resetting state ... is that necessary?
+                    resetNow();
+                    break;
+                default:
+                    break;
+            }
+        } else if (evt instanceof DiscardFurtherInboundEvent) {
+            resetNow();
+            ctx.pipeline().replace(this, DiscardInboundHandler.INSTANCE.toString(),
+                    DiscardInboundHandler.INSTANCE);
+            ctx.channel().config().setAutoRead(true);
+        }
+        super.userEventTriggered(ctx, evt);
+    }
+
+    protected abstract boolean isContentAlwaysEmpty(T msg);
+
+    protected abstract boolean isInterim(T msg);
+
+    protected abstract void onMetaDataRead(ChannelHandlerContext ctx, T msg);
+
+    protected abstract void onDataSeen();
+
+    /**
+     * Returns true if the server switched to a different protocol than HTTP/1.0 or HTTP/1.1, e.g. HTTP/2 or Websocket.
+     * Returns false if the upgrade happened in a different layer, e.g. upgrade from HTTP/1.1 to HTTP/1.1 over TLS.
+     */
+    private static boolean isSwitchingToNonHttp1Protocol(final HttpResponseMetaData msg) {
+        if (msg.status().code() != SWITCHING_PROTOCOLS.code()) {
+            return false;
+        }
+        CharSequence newProtocol = msg.headers().get(UPGRADE);
+        return newProtocol == null ||
+                !AsciiString.contains(newProtocol, HTTP_1_0.toString()) &&
+                        !AsciiString.contains(newProtocol, HTTP_1_1.toString());
+    }
+
+    /**
+     * Resets the state of the decoder to prepare it for parsing a new incoming message.
+     * <p>
+     * Subclasses that override this method have to invoke this implementation using {@code super} keyword.
+     */
+    protected void resetNow() {
+        T message = this.message;
+        this.message = null;
+        this.trailer = null;
+        contentLength = Long.MIN_VALUE;
+        parsingLine = 0;
+        cumulationIndex = -1;
+        currentHeadersBlockLength = 0;
+        if (!isDecodingRequest()) {
+            HttpResponseMetaData res = (HttpResponseMetaData) message;
+            if (res != null && isSwitchingToNonHttp1Protocol(res)) {
+                currentState = State.UPGRADED;
+                return;
+            }
+        }
+
+        currentState = State.SKIP_CONTROL_CHARS;
+        skippedControls = 0;
+    }
+
+    /**
+     * In the interest of robustness, a peer that is expecting to receive and parse a start-line SHOULD ignore at
+     * least one empty line (CRLF) received prior to the request-line.
+     *
+     * @see <a href="https://tools.ietf.org/html/rfc7230#section-3.5">RFC7230, Message Parsing Robustness</a>
+     */
+    private boolean skipControlCharacters(final ByteBuf buffer) {
+        if (cumulationIndex < 0) {
+            cumulationIndex = buffer.readerIndex();
+        }
+        final int readableBytes = buffer.writerIndex() - cumulationIndex;
+        // Look at one more character than allowed to expect a valid VCHAR:
+        final int len = min(MAX_ALLOWED_CHARS_TO_SKIP_PLUS_ONE - skippedControls, readableBytes);
+        final int i = buffer.forEachByte(cumulationIndex, len, SKIP_PREFACING_CRLF);
+        if (i < 0) {
+            skippedControls += len;
+            if (skippedControls > MAX_ALLOWED_CHARS_TO_SKIP) {
+                throw new DecoderException(
+                        "Too many prefacing CRLF (0x0d0a) characters before the start-line of the HTTP message");
+            }
+            cumulationIndex += len;
+            buffer.readerIndex(cumulationIndex);
+            return false;
+        } else {
+            cumulationIndex = i;
+            buffer.readerIndex(i);
+            return true;
+        }
+    }
+
+    private void parseHeaderLine(final HttpHeaders headers, final ByteBuf buffer, final int lfIndex,
+                                 final int nonControlIndex) throws DecoderException {
+        // https://tools.ietf.org/html/rfc7230#section-3.2
+        // header-field   = field-name ":" OWS field-value OWS
+        //
+        //      field-name     = token
+        //      field-value    = *( field-content / obs-fold )
+        //      field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
+        //      field-vchar    = VCHAR / obs-text
+        //
+        //      obs-fold       = CRLF 1*( SP / HTAB )
+        //                     ; obsolete line folding
+        //                     ; see Section 3.2.4
+        //      OWS            = *( SP / HTAB )
+        //                     ; optional whitespace
+        // https://tools.ietf.org/html/rfc7230#section-3.2.4
+        // No whitespace is allowed between the header field-name and colon.  In
+        //    the past, differences in the handling of such whitespace have led to
+        //    security vulnerabilities in request routing and response handling.
+        // Additional checks will be done by header validator
+
+        final int nameStart = buffer.readerIndex();
+        final int nameEnd = buffer.forEachByte(nameStart, nonControlIndex - nameStart + 1, FIND_COLON);
+        if (nameEnd < 0) {
+            throw newDecoderExceptionAtLine("Unable to find end of a header name in line ", parsingLine);
+        }
+        if (nameEnd == nameStart) {
+            throw newDecoderExceptionAtLine("Empty header name in line ", parsingLine);
+        }
+        // We assume the allocator will not leak memory, and so we retain + slice to avoid copying data.
+        final CharSequence name = newAsciiString(newBufferFrom(buffer.retainedSlice(nameStart, nameEnd - nameStart)));
+        final CharSequence value;
+        try {
+            final int valueStart;
+            if (nameEnd >= nonControlIndex || (valueStart =
+                    buffer.forEachByte(nameEnd + 1, nonControlIndex - nameEnd, FIND_FIELD_VALUE)) < 0) {
+                value = emptyAsciiString();
+            } else {
+                final int valueEnd =
+                        buffer.forEachByteDesc(valueStart, nonControlIndex - valueStart + 1, FIND_FIELD_VALUE);
+                // We assume the allocator will not leak memory, and so we retain + slice to avoid copying data.
+                value = newAsciiString(newBufferFrom(buffer.retainedSlice(valueStart, valueEnd - valueStart + 1)));
+            }
+        } catch (IllegalCharacterException cause) {
+            throw invalidHeaderValue(name, parsingLine, cause);
+        }
+        try {
+            headers.add(name, value);
+        } catch (IllegalCharacterException cause) {
+            throw invalidHeaderNameOrValue(name, parsingLine, cause);
+        }
+        // Consume the header line bytes from the buffer.
+        consumeCRLF(buffer, lfIndex);
+    }
+
+    private static DecoderException newDecoderExceptionAtLine(final String message, final int parsingLine) {
+        return new DecoderException(message + (parsingLine - 1));
+    }
+
+    private static DecoderException invalidHeaderNameOrValue(final CharSequence name, final int parsingLine,
+                                                             final IllegalCharacterException cause) {
+        final String msg = cause.getMessage();
+        throw new StacklessDecoderException("Invalid header name or value for '" + name + "' in line " +
+                (parsingLine - 1) + (msg != null ? ": " + msg : ""), cause);
+    }
+
+    private static DecoderException invalidHeaderValue(final CharSequence name, final int parsingLine,
+                                                       final IllegalCharacterException cause) {
+        throw new StacklessDecoderException("Invalid value for the header '" + name + "' in line " + (parsingLine - 1),
+                cause);
+    }
+
+    @Nullable
+    private State readHeaders(final ByteBuf buffer) {
+        final long longLFIndex = findCRLF(buffer, maxHeaderFieldLength, allowLFWithoutCR);
+        if (longLFIndex < 0) {
+            return null;
+        }
+        final T message = this.message;
+        assert message != null;
+        if (!parseAllHeaders("headers", buffer, message.headers(), longLFIndex)) {
+            return null;
+        }
+
+        // Determine content-length here to apply validation as soon as header are read:
+        final long contentLength = contentLength();
+        if (isContentAlwaysEmpty(message)) {
+            removeTransferEncodingChunked(message.headers());
+            return State.SKIP_CONTROL_CHARS;
+        }
+        if (message.headers().contains(TRANSFER_ENCODING)) {
+            // RFC 9112 section 6.1: Transfer-Encoding is HTTP/1.1-only.
+            if (!HTTP_1_1.equals(message.version())) {
+                throw new StacklessDecoderException("Transfer-Encoding is only allowed in HTTP/1.1");
+            }
+
+            // RFC 9112 section 6.1: chunked must be the final coding to apply chunked framing, and a sender
+            // "MUST NOT apply the chunked transfer coding more than once to a message body". Deliberate
+            // deviation from RFC 9112 section 6.3, which would otherwise let some non-chunked-final shapes
+            // fall back to Content-Length (e.g. plain "gzip") or to framing a response by connection close
+            // (e.g. "chunked, gzip"): any Transfer-Encoding whose final coding isn't chunked, or that names
+            // chunked more than once, is rejected outright here, for both requests and responses, since it's
+            // an ambiguous/smuggling-adjacent signal regardless of the shape it takes.
+            validateTransferEncodingChunked(message.headers().valuesIterator(TRANSFER_ENCODING));
+            // RFC 9112 section 6.3: Transfer-Encoding overrides Content-Length. Drop any received
+            // Content-Length now so it can never be used to frame the body.
+            if (contentLength >= 0L) {
+                // RFC 9112 section 6.1: this is the forbidden Content-Length + Transfer-Encoding
+                // combination. Process per Transfer-Encoding alone and force Connection: close -
+                // the shouldClose(message) check below signals the close handler so the connection
+                // is torn down after this exchange to avoid request smuggling attacks.
+                message.headers().remove(CONTENT_LENGTH);
+                this.contentLength = Long.MIN_VALUE;
+                // Preserve any Connection values the peer already sent (e.g. upgrade, keep-alive) and
+                // only add close if it isn't there yet, rather than overriding with set(...).
+                if (!isConnectionClose(message.headers())) {
+                    message.headers().add(CONNECTION, CLOSE);
+                }
+            }
+            return State.READ_CHUNK_SIZE;
+        }
+        if (contentLength >= 0L) {
+            return State.READ_FIXED_LENGTH_CONTENT;
+        } else {
+            return State.READ_VARIABLE_LENGTH_CONTENT;
+        }
+    }
+
+    private long contentLength() {
+        if (contentLength == Long.MIN_VALUE) {
+            assert message != null;
+            contentLength = getContentLength(message);
+        }
+        return contentLength;
+    }
+
+    @Nullable
+    private HttpHeaders readTrailingHeaders(final ByteBuf buffer) {
+        final long longLFIndex = findCRLF(buffer, maxHeaderFieldLength, allowLFWithoutCR);
+        if (longLFIndex < 0) {
+            return null;
+        }
+        if (crlfBeforeIndex(longLFIndex) > buffer.readerIndex()) {
+            HttpHeaders trailer = this.trailer;
+            if (trailer == null) {
+                trailer = this.trailer = headersFactory.newTrailers();
+            }
+
+            return parseAllHeaders("trailers", buffer, trailer, longLFIndex) ? trailer : null;
+        }
+
+        consumeCRLF(buffer, crlfIndex(longLFIndex));
+        // The RFC says the trailers are optional [1] so use an empty trailers instance from the headers factory.
+        // [1] https://tools.ietf.org/html/rfc7230.html#section-4.1
+        return trailer != null ? trailer : headersFactory.newEmptyTrailers();
+    }
+
+    /**
+     * Parse the HTTP headers from a buffer
+     *
+     * @param name name of the block to parse
+     * @param buffer source of the headers
+     * @param headers destination for parsed headers
+     * @param longLFIndex result of {@link #findCRLF(ByteBuf, int, int, int, boolean)}
+     * @return true if complete headers were processed otherwise false indicates incomplete parsing or error.
+     */
+    private boolean parseAllHeaders(final String name, final ByteBuf buffer, final HttpHeaders headers,
+                                    long longLFIndex) {
+        for (;;) {
+            final int lfIndex = crlfIndex(longLFIndex);
+            final int nonControlIndex = crlfBeforeIndex(longLFIndex);
+            if (nonControlIndex < buffer.readerIndex()) {
+                // We intentionally do not check maxTotalHeaderFieldsLength limit for the last CRLF to avoid failing the
+                // whole HTTP message because of an extra new line separator. Counting per line makes it simpler for
+                // users to estimate the required limit size.
+                consumeCRLF(buffer, lfIndex);
+                // Reset the counter to start from 0 if we encounter trailers
+                currentHeadersBlockLength = 0;
+                return true;
+            }
+
+            ensureTotalHeaderFieldsLimit(name, lfIndex - buffer.readerIndex() + 1); // Include CRLF into account
+            parseHeaderLine(headers, buffer, lfIndex, nonControlIndex);
+            longLFIndex = findCRLF(buffer, lfIndex + 1, maxHeaderFieldLength, parsingLine, allowLFWithoutCR);
+            if (longLFIndex < 0) {
+                return false;
+            }
+            ++parsingLine;
+        }
+    }
+
+    private void ensureTotalHeaderFieldsLimit(final String name, final int headerLineLength) {
+        currentHeadersBlockLength += headerLineLength;
+        if (currentHeadersBlockLength > maxTotalHeaderFieldsLength) {
+            throw new TooLongFrameException("HTTP " + name + " exceeded the total limit of " +
+                    maxTotalHeaderFieldsLength + " bytes after parsing line #" + parsingLine + " of " +
+                    headerLineLength + " bytes (parsed " + currentHeadersBlockLength + " bytes in total). " +
+                    "Users can use '" + DEFAULT_MAX_TOTAL_HEADER_FIELDS_LENGTH_PROPERTY + "' system property to " +
+                    "increase the limit until they can configure new value via H1ProtocolConfigBuilder API.");
+        }
+    }
+
+    private static int getChunkSize(final ByteBuf buffer, final int lfIndex) {
+        if (lfIndex - 2 < buffer.readerIndex()) {
+            throw new DecoderException("Chunked encoding specified but chunk-size not found");
+        }
+        return getChunkSize(buffer.toString(buffer.readerIndex(),
+                lfIndex - 1 - buffer.readerIndex(), US_ASCII));
+    }
+
+    /**
+     * Parses an HTTP/1.1 chunk-size token. Stops at the first {@code ';'}, whitespace, or
+     * ISO control character so any chunk-extension is ignored. Visible for testing the
+     * {@code value < 0} guard which is otherwise unreachable through the public flow given
+     * the {@link #MAX_HEX_CHARS_FOR_LONG} line cap.
+     */
+    @SuppressWarnings("PMD.ExceptionAsFlowControl")
+    static int getChunkSize(String hex) {
+        hex = hex.trim();
+        for (int i = 0; i < hex.length(); ++i) {
+            char c = hex.charAt(i);
+            if (c == ';' || isWhitespace(c) || isISOControl(c)) {
+                hex = hex.substring(0, i);
+                break;
+            }
+        }
+        try {
+            final long value = parseUnsignedLong(hex, 16);
+            if (value < 0 || value > Integer.MAX_VALUE) {
+                throw new NumberFormatException("Chunk size " + Long.toUnsignedString(value)
+                        + " exceeds Integer.MAX_VALUE");
+            }
+            return (int) value;
+        } catch (NumberFormatException cause) {
+            throw invalidChunkSize(hex, cause);
+        }
+    }
+
+    private static DecoderException invalidChunkSize(final String hex, final NumberFormatException cause) {
+        return new StacklessDecoderException("Cannot parse chunk-size: " + hex + ", expected a valid HEXDIG", cause);
+    }
+
+    private void consumeCRLF(final ByteBuf buffer, final int lfIndex) {
+        // Consume the initial line bytes from the buffer.
+        if (buffer.writerIndex() - 1 >= lfIndex) {
+            buffer.readerIndex(lfIndex + 1);
+            cumulationIndex = lfIndex + 1;
+        } else {
+            buffer.readerIndex(lfIndex);
+            cumulationIndex = lfIndex;
+        }
+    }
+
+    private long findCRLF(final ByteBuf buffer, final int maxLineSize, final boolean allowLFWithoutCR) {
+        if (cumulationIndex < 0) {
+            cumulationIndex = buffer.readerIndex();
+        }
+        final long longLFIndex = findCRLF(buffer, cumulationIndex, maxLineSize, parsingLine, allowLFWithoutCR);
+        if (longLFIndex < 0) {
+            cumulationIndex = min(buffer.writerIndex(), cumulationIndex + maxLineSize);
+        } else {
+            cumulationIndex = crlfIndex(longLFIndex);
+            ++parsingLine;
+        }
+        return longLFIndex;
+    }
+
+    /**
+     * find the next occurrence of CRLF in the buffer beginning at startIndex and looking no further than maxLineSize or
+     * the written portion of the buffer.
+     *
+     * @param buffer source buffer
+     * @param startIndex initial scanning index
+     * @param maxLineSize maximum length of a line
+     * @param parsingLine line count for error messages.
+     * @param allowLFWithoutCR allow a LF without a proceeding CR to signify "end of line".
+     * @return
+     * <ul>
+     *     <li>{@code <0} if no [CR]?LF found</li>
+     *     <li>Use {@link #crlfIndex(long)} to extract the offset of the [CR]?LF and {@link #crlfBeforeIndex(long)}
+     *     to get the index immediately preceding the [CR]?LF</li>
+     * </ul>
+     * @throws DecoderException if no LF or found in buffer
+     * @throws TooLongFrameException if the line exceeds the permitted maximum
+     */
+    private static long findCRLF(final ByteBuf buffer, int startIndex, final int maxLineSize, final int parsingLine,
+                                final boolean allowLFWithoutCR) {
+        final int maxToIndex = addWithOverflowProtection(startIndex, maxLineSize);
+        for (;;) {
+            final int toIndex = min(buffer.writerIndex(), maxToIndex);
+            final int lfIndex = findLF(buffer, startIndex, toIndex);
+            final boolean foundCR;
+            if (lfIndex == -1) {
+                if (toIndex - startIndex == maxLineSize) {
+                    throw new TooLongFrameException("Could not find CRLF (0x0d0a) within " + maxLineSize +
+                            " bytes, while parsing line #" + parsingLine);
+                }
+                return -2;
+            } else if (lfIndex == buffer.readerIndex()) {
+                if (allowLFWithoutCR) {
+                    return ((long) lfIndex) << 32 | lfIndex;
+                }
+                buffer.skipBytes(1);
+                ++startIndex;
+            } else if ((foundCR = buffer.getByte(lfIndex - 1) == CR) || allowLFWithoutCR) {
+                return foundCR ? ((long) lfIndex - 1) << 32 | lfIndex : ((long) lfIndex) << 32 | lfIndex;
+            } else if (lfIndex != maxToIndex) {
+                throw new DecoderException("Found LF (0x0a) but no CR (0x0d) before, while parsing line #" +
+                        parsingLine);
+            } else {
+                throw new TooLongFrameException("An HTTP line " + parsingLine + " is larger than " + maxLineSize +
+                        " bytes");
+            }
+        }
+    }
+
+    private static int crlfIndex(long index) {
+        return (int) index;
+    }
+
+    private static int crlfBeforeIndex(long index) {
+        return ((int) (index >>> 32)) - 1;
+    }
+
+    private static int findLF(final ByteBuf buffer, final int fromIndex, final int toIndex) {
+        if (fromIndex >= toIndex) {
+            return -1;
+        }
+        return buffer.forEachByte(fromIndex, toIndex - fromIndex, FIND_LF);
+    }
+
+    private DecoderException newStartLineError(final String place) {
+        return new DecoderException("Invalid start-line: incorrect number of components, cannot find the " + place +
+                " SP, expected: " + (isDecodingRequest() ? "method SP request-target SP HTTP-version" :
+                "HTTP-version SP status-code SP reason-phrase"));
+    }
+
+    private static int getWebSocketContentLength(final HttpMetaData message) {
+        // WebSocket messages have constant content-lengths.
+        HttpHeaders h = message.headers();
+        if (message instanceof HttpRequestMetaData) {
+            HttpRequestMetaData req = (HttpRequestMetaData) message;
+            // Note that we are using ServiceTalk constants for HttpRequestMethod here, and assume the decoders will
+            // also use ServiceTalk constants which allows us to use reference check here:
+            if (GET.equals(req.method()) &&
+                    h.contains(SEC_WEBSOCKET_KEY1) &&
+                    h.contains(SEC_WEBSOCKET_KEY2)) {
+                return 8;
+            }
+        } else if (message instanceof HttpResponseMetaData) {
+            HttpResponseMetaData res = (HttpResponseMetaData) message;
+            if (res.status().code() == SWITCHING_PROTOCOLS.code() &&
+                    h.contains(SEC_WEBSOCKET_ORIGIN) &&
+                    h.contains(SEC_WEBSOCKET_LOCATION)) {
+                return 16;
+            }
+        }
+
+        // Not a web socket message
+        return -1;
+    }
+
+    static long getContentLength(final HttpMetaData message) {
+        final HttpHeaders headers = message.headers();
+        final long contentLength = HeaderUtils.contentLength(headers.valuesIterator(CONTENT_LENGTH));
+        if (contentLength >= 0) {
+            return contentLength;
+        }
+
+        // We know the content length if it's a Web Socket message even if
+        // Content-Length header is missing.
+        long webSocketContentLength = getWebSocketContentLength(message);
+        if (webSocketContentLength >= 0) {
+            return webSocketContentLength;
+        }
+
+        // Otherwise we don't.
+        return -1;
+    }
+
+    static HttpProtocolVersion nettyBufferToHttpVersion(final ByteBuf buffer, final int start, final int length) {
+        if (length != 8) {
+            throw newHttpVersionError(buffer, start, length, null);
+        }
+
+        final long httpVersion = buffer.getLong(start);
+        if ((httpVersion & HTTP_VERSION_MASK) != HTTP_VERSION_FORMAT) {
+            throw newHttpVersionError(buffer, start, length, null);
+        }
+
+        try {
+            return HttpProtocolVersion.of(1, toDecimal((int) httpVersion & 0xff));
+        } catch (IllegalCharacterException cause) {
+            throw newHttpVersionError(buffer, start, length, cause);
+        }
+    }
+
+    private static DecoderException newHttpVersionError(final ByteBuf buffer, final int start, final int length,
+                                                        @Nullable final Throwable cause) {
+        final String message = "Invalid HTTP version: '" + buffer.toString(start, length, US_ASCII) +
+                "', expected: HTTP/1.x";
+        return cause == null ? new DecoderException(message) : new StacklessDecoderException(message, cause);
+    }
+
+    static int toDecimal(final int value) {
+        if (value < '0' || value > '9') {
+            throw new IllegalCharacterException((byte) value, "0-9 (0x30-0x39)");
+        }
+        return value - '0';
+    }
+
+    static boolean isWS(final byte value) {
+        return value == SP || value == HT;
+    }
+
+    static boolean isVCHAR(final int value) {
+        return value >= '!' && value <= '~';
+    }
+
+    /**
+     * Validates that {@code chunked} appears exactly once across all {@code Transfer-Encoding} header field-lines
+     * and that it is the final coding, per RFC 9112 section 6.1: chunked must be the final transfer coding to
+     * apply chunked framing, and a sender "MUST NOT apply the chunked transfer coding more than once to a message
+     * body (i.e., chunking an already chunked message is not allowed)". Stops scanning as soon as a second
+     * {@code chunked} token is found, without inspecting the remaining tokens or header lines.
+     *
+     * @param encodingIt an iterator over each {@code Transfer-Encoding} header field-line value, in wire order
+     * @throws StacklessDecoderException if chunked is not the final coding, or appears more than once
+     */
+    private static void validateTransferEncodingChunked(final Iterator<? extends CharSequence> encodingIt) {
+        final int chunkedLength = CHUNKED.length();
+        boolean chunkedSeen = false;
+        boolean lastTokenIsChunked = false;
+        while (encodingIt.hasNext()) {
+            final CharSequence value = encodingIt.next();
+            final int valueLength = value.length();
+            int tokenStart = 0;
+            // List elements are comma-separated (RFC 9110 section 5.6.1); walk tokens left-to-right, trimming
+            // any OWS (SP/HTAB) at their edges, so a bare SP/HTAB with no comma (e.g. "gzip chunked") is not
+            // mistaken for two distinct tokens.
+            for (int i = 0; i <= valueLength; i++) {
+                if (i == valueLength || value.charAt(i) == ',') {
+                    int tokenEnd = i;
+                    while (tokenStart < tokenEnd && isOWSChar(value.charAt(tokenStart))) {
+                        tokenStart++;
+                    }
+                    while (tokenEnd > tokenStart && isOWSChar(value.charAt(tokenEnd - 1))) {
+                        tokenEnd--;
+                    }
+                    lastTokenIsChunked = tokenEnd - tokenStart == chunkedLength &&
+                            regionMatches(value, true, tokenStart, CHUNKED, 0, chunkedLength);
+                    if (lastTokenIsChunked) {
+                        if (chunkedSeen) {
+                            throw new StacklessDecoderException(
+                                    "chunked transfer coding must not be applied more than once");
+                        }
+                        chunkedSeen = true;
+                    }
+                    tokenStart = i + 1;
+                }
+            }
+        }
+        if (!lastTokenIsChunked) {
+            throw new StacklessDecoderException("chunked must be the final Transfer-Encoding coding");
+        }
+    }
+
+    private static boolean isOWSChar(final char value) {
+        return value == ' ' || value == '\t';
+    }
+
+    private static boolean isObsText(final byte value) {
+        return value < 0; // x80-xFF
+    }
+
+    @Sharable
+    private static final class DiscardInboundHandler extends SimpleChannelInboundHandler<Object> {
+        static final ChannelInboundHandler INSTANCE = new DiscardInboundHandler();
+
+        private DiscardInboundHandler() {
+            super(/* autoRelease */ true);
+        }
+
+        @Override
+        protected void channelRead0(final ChannelHandlerContext ctx, final Object msg) {
+            // noop
+        }
+    }
+
+    static final class StacklessDecoderException extends DecoderException {
+        private static final long serialVersionUID = 7611225180490304156L;
+
+        StacklessDecoderException(final String message) {
+            super(message);
+        }
+
+        StacklessDecoderException(final String message, final Throwable cause) {
+            super(message, cause);
+        }
+
+        @Override
+        public Throwable fillInStackTrace() {
+            return this;
+        }
+    }
+}

@@ -1,0 +1,20 @@
+// Configure {source-root} values based on how this document is rendered: on GitHub or not
+ifdef::env-github[]
+:source-root:
+endif::[]
+ifndef::env-github[]
+ifndef::source-root[:source-root: https://github.com/apple/servicetalk/blob/{page-origin-refname}]
+endif::[]
+
+= Evolving to asynchronous
+
+Evolution to full asynchronous routes is elaborated xref:{page-version}@servicetalk-http-api::evolve-to-async.adoc[here].
+This document describes the capabilities of jersey router with respect to specifying strategy per route.
+
+== Explicit route strategy
+
+Jersey router provides xref:index.adoc#execution-strategies[annotations] to specify execution strategies for each route.
+
+== Implicit route strategy
+
+Jersey router currently does not have the capability to infer an execution strategy for a route implicitly.

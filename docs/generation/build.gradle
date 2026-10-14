@@ -1,0 +1,72 @@
+/*
+ * Copyright © 2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+buildscript {
+  if (!repositories) {
+    repositories {
+      gradlePluginPortal()
+    }
+  }
+
+  ext.isCiBuild = "true" == System.getenv("CI")
+  ext.isReleaseBuild = project.hasProperty("releaseBuild")
+
+  dependencies {
+    classpath "org.jsoup:jsoup:$jsoupVersion"
+  }
+}
+
+plugins {
+  id "com.github.node-gradle.node" version "$nodePluginVersion"
+}
+
+apply plugin: "base"
+apply plugin: "idea"
+
+// make Jsoup class available to `validateSite.gradle`
+// (cannot easily declare the jsoup buildscript dependency there due to how we define buildscript repos in
+// ~/.gradle/init.gradle)
+ext.Jsoup = org.jsoup.Jsoup
+
+buildDir = ".out"
+
+node {
+  version = "$nodeVersion"
+  download = true
+}
+
+task installAntora(type: NpmTask) {
+  onlyIf {
+    // speed up local interactive builds
+    def executable = "node_modules/@antora/cli/bin/antora"
+    !file(executable).exists() || (executable + " -v").execute().text.trim() != antoraVersion
+  }
+
+  args = [
+      "install",
+      "@antora/cli@$antoraVersion",
+      "@antora/site-generator-default@$antoraVersion"]
+}
+
+apply from: "$projectDir/gradle/buildSite.gradle"
+apply from: "$projectDir/gradle/validateSite.gradle"
+
+idea {
+  module {
+    excludeDirs += [file(".cache"), file(".gradle"), file(".idea"), file("node_modules")]
+  }
+}
+tasks.idea.dependsOn(tasks.cleanIdea)

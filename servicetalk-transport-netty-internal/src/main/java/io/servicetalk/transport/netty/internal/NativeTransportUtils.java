@@ -1,0 +1,249 @@
+/*
+ * Copyright © 2018, 2021, 2026 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.transport.netty.internal;
+
+import io.servicetalk.transport.api.DomainSocketAddress;
+import io.servicetalk.transport.api.FileDescriptorSocketAddress;
+import io.servicetalk.utils.internal.PlatformDependent;
+
+import io.netty.channel.EventLoop;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.IoEventLoopGroup;
+import io.netty.channel.epoll.Epoll;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollIoHandler;
+import io.netty.channel.kqueue.KQueue;
+import io.netty.channel.kqueue.KQueueEventLoopGroup;
+import io.netty.channel.kqueue.KQueueIoHandler;
+import io.netty.channel.uring.IoUring;
+import io.netty.channel.uring.IoUringIoHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static io.netty.util.internal.PlatformDependent.normalizedArch;
+import static java.lang.Boolean.getBoolean;
+
+/**
+ * Utility to check availability of Netty <a href="https://netty.io/wiki/native-transports.html">native transports</a>.
+ * <p>
+ * It also prevents the load of classes and libraries when OS does not support it, and logs when OS supports but
+ * libraries are not available.
+ */
+final class NativeTransportUtils {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(NativeTransportUtils.class);
+    private static final String REQUIRE_NATIVE_LIBS_NAME = "io.servicetalk.transport.netty.requireNativeLibs";
+    // FIXME: 0.43 - consider requiring native libs by default
+    private static final boolean REQUIRE_NATIVE_LIBS = getBoolean(REQUIRE_NATIVE_LIBS_NAME);
+    private static final String NETTY_NO_NATIVE_NAME = "io.netty.transport.noNative";
+    private static final boolean NETTY_NO_NATIVE = getBoolean(NETTY_NO_NATIVE_NAME);
+    private static final String TRY_IO_URING_NAME = "io.servicetalk.transport.netty.tryIoUring";
+    private static final AtomicBoolean TRY_IO_URING;    // non-primitive boolean to allow overrides in tests
+    private static final boolean IS_LINUX;
+    private static final boolean IS_OSX_OR_BSD;
+    // FIXME: 0.43 - remove isClassAvailable after dropping support for Netty 4.1.x
+    /**
+     * {@code true} if the {@link IoUring} classes are available on the classpath.
+     * {@code io_uring} was promoted from an incubator artifact into Netty core in 4.2 and does not exist for 4.1.x.
+     */
+    private static final boolean IO_URING_CLASSES_AVAILABLE = isClassAvailable("io.netty.channel.uring.IoUring");
+    /**
+     * {@code true} if Netty's 4.2 {@code io.netty.channel.IoEventLoopGroup} / {@code IoHandler} model is available on
+     * the classpath. This is used as a runtime marker to remain compatible with Netty 4.1.x, where these types do not
+     * exist. Every access to a 4.2-only type below is short-circuited behind this flag (or
+     * {@link #IO_URING_CLASSES_AVAILABLE}), so those types are never linked on a 4.1.x runtime.
+     */
+    private static final boolean NEW_IO_MODEL_SUPPORTED = isClassAvailable("io.netty.channel.IoEventLoopGroup");
+
+    static {
+        final String os = PlatformDependent.normalizedOs();
+        IS_LINUX = PlatformDependent.isLinux();
+        IS_OSX_OR_BSD = PlatformDependent.isOsx() || os.contains("bsd");
+        TRY_IO_URING = new AtomicBoolean(getBoolean(TRY_IO_URING_NAME));
+
+        LOGGER.debug("-D{}={}", REQUIRE_NATIVE_LIBS_NAME, REQUIRE_NATIVE_LIBS);
+        LOGGER.debug("-D{}={}", NETTY_NO_NATIVE_NAME, NETTY_NO_NATIVE);
+        LOGGER.debug("-D{}={}", TRY_IO_URING_NAME, TRY_IO_URING.get());
+        LOGGER.debug("IoUring classes available: {}", IO_URING_CLASSES_AVAILABLE);
+        LOGGER.debug("IoEventLoopGroup available: {}", NEW_IO_MODEL_SUPPORTED);
+        LOGGER.debug("Operating system: {}", os);
+
+        if (IS_LINUX && !Epoll.isAvailable()) {
+            reactOnUnavailability("epoll", os, Epoll.unavailabilityCause());
+        } else if (IS_OSX_OR_BSD && !KQueue.isAvailable()) {
+            reactOnUnavailability("kqueue", "osx", KQueue.unavailabilityCause());
+        }
+    }
+
+    private NativeTransportUtils() {
+        // No instances
+    }
+
+    private static boolean isClassAvailable(final String className) {
+        try {
+            Class.forName(className, false, NativeTransportUtils.class.getClassLoader());
+            return true;
+        } catch (Throwable cause) {
+            LOGGER.debug("Class {} is not available on the classpath, assuming an older Netty version at runtime.",
+                    className, cause);
+            return false;
+        }
+    }
+
+    private static void reactOnUnavailability(final String transport, final String os, final Throwable cause) {
+        if (REQUIRE_NATIVE_LIBS) {
+            throw new IllegalStateException("Can not load required \"io.netty:netty-transport-native-" + transport +
+                    ":$nettyVersion:" + os + '-' + normalizedArch() + "\", it may impact responsiveness, " +
+                    "reliability, and performance of the application. Fix the deployment to make sure the native " +
+                    "libraries are packaged and can be loaded. Otherwise, unset \"-D" + REQUIRE_NATIVE_LIBS_NAME +
+                    "=true\" system property to let the application start without native libraries and set \"-D" +
+                    NETTY_NO_NATIVE_NAME + "=true\" if running without native libs is intentional. " +
+                    "For more information, see https://netty.io/wiki/native-transports.html", cause);
+        }
+        if (NETTY_NO_NATIVE) {
+            LOGGER.info("io.netty:netty-transport-native-{} is explicitly disabled with \"-D{}=true\". Note that it " +
+                    "may impact responsiveness, reliability, and performance of the application. ServiceTalk " +
+                    "recommends always running with native libraries. Consider using \"-D{}=true\" to fail " +
+                    "application initialization without native libs. For more information, see " +
+                    "https://netty.io/wiki/native-transports.html",
+                    transport, NETTY_NO_NATIVE_NAME, REQUIRE_NATIVE_LIBS_NAME);
+        } else {
+            LOGGER.warn("Can not load \"io.netty:netty-transport-native-{}:$nettyVersion:{}-{}\", it may impact " +
+                    "responsiveness, reliability, and performance of the application. ServiceTalk recommends always " +
+                    "running with native libraries. Consider using \"-D{}=true\" to fail application initialization " +
+                    "without native libraries. If this is intentional, let netty know about it using \"-D{}=true\". " +
+                    "For more information, see https://netty.io/wiki/native-transports.html",
+                    transport, os, normalizedArch(), REQUIRE_NATIVE_LIBS_NAME, NETTY_NO_NATIVE_NAME, cause);
+        }
+    }
+
+    /**
+     * Determine if {@link IoUring} is available.
+     *
+     * @return {@code true} if {@link IoUring} is available
+     */
+    static boolean isIoUringAvailable() {
+        return IO_URING_CLASSES_AVAILABLE && IS_LINUX && TRY_IO_URING.get() && IoUring.isAvailable();
+    }
+
+    /**
+     * Determine if {@link Epoll} is available.
+     *
+     * @return {@code true} if {@link Epoll} is available
+     */
+    static boolean isEpollAvailable() {
+        return IS_LINUX && Epoll.isAvailable();
+    }
+
+    /**
+     * Determine if {@link KQueue} is available.
+     *
+     * @return {@code true} if {@link KQueue} is available
+     */
+    static boolean isKQueueAvailable() {
+        return IS_OSX_OR_BSD && KQueue.isAvailable();
+    }
+
+    /**
+     * Returns {@code true} if native {@link IoUring} transport could be used.
+     *
+     * @param group the used {@link EventLoopGroup}
+     * @return {@code true} if native {@link IoUring} transport could be used
+     */
+    static boolean useIoUring(final EventLoopGroup group) {
+        if (!isIoUringAvailable()) {
+            return false;
+        }
+        // Check if we should use the io_uring transport. This is true if either an io_uring IoEventLoopGroup is used
+        // directly or if the passed group is an EventLoop and it's parent is an io_uring IoEventLoopGroup.
+        return isIoUringGroup(group) || (group instanceof EventLoop && isIoUringGroup(((EventLoop) group).parent()));
+    }
+
+    private static boolean isIoUringGroup(final EventLoopGroup group) {
+        return IO_URING_CLASSES_AVAILABLE && NEW_IO_MODEL_SUPPORTED && group instanceof IoEventLoopGroup &&
+                ((IoEventLoopGroup) group).isIoType(IoUringIoHandler.class);
+    }
+
+    /**
+     * Returns {@code true} if native {@link Epoll} transport could be used.
+     *
+     * @param group the used {@link EventLoopGroup}
+     * @return {@code true} if native {@link Epoll} transport could be used
+     */
+    static boolean useEpoll(final EventLoopGroup group) {
+        if (!isEpollAvailable()) {
+            return false;
+        }
+        // Check if we should use the epoll transport. This is true if either the EpollEventLoopGroup is used directly
+        // or if the passed group is an EventLoop and it's parent is an EpollEventLoopGroup.
+        return isEpollGroup(group) || (group instanceof EventLoop && isEpollGroup(((EventLoop) group).parent()));
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean isEpollGroup(final EventLoopGroup group) {
+        return group instanceof EpollEventLoopGroup ||
+                (NEW_IO_MODEL_SUPPORTED && group instanceof IoEventLoopGroup &&
+                        ((IoEventLoopGroup) group).isIoType(EpollIoHandler.class));
+    }
+
+    /**
+     * Returns {@code true} if native {@link KQueue} transport could be used.
+     *
+     * @param group the used {@link EventLoopGroup}
+     * @return {@code true} if native {@link KQueue} transport could be used
+     */
+    static boolean useKQueue(final EventLoopGroup group) {
+        if (!isKQueueAvailable()) {
+            return false;
+        }
+        // Check if we should use the kqueue transport. This is true if either the KQueueEventLoopGroup is used directly
+        // or if the passed group is an EventLoop and it's parent is an KQueueEventLoopGroup.
+        return isKQueueGroup(group) || (group instanceof EventLoop && isKQueueGroup(((EventLoop) group).parent()));
+    }
+
+    @SuppressWarnings("deprecation")
+    private static boolean isKQueueGroup(final EventLoopGroup group) {
+        return group instanceof KQueueEventLoopGroup ||
+                (NEW_IO_MODEL_SUPPORTED && group instanceof IoEventLoopGroup &&
+                        ((IoEventLoopGroup) group).isIoType(KQueueIoHandler.class));
+    }
+
+    /**
+     * Determine if {@link DomainSocketAddress} is supported.
+     *
+     * @param group the group to test.
+     * @return {@code true} if {@link DomainSocketAddress} is supported by {@code group}
+     */
+    static boolean isUnixDomainSocketSupported(final EventLoopGroup group) {
+        return useEpoll(group) || useKQueue(group);
+    }
+
+    /**
+     * Determine if {@link FileDescriptorSocketAddress} is supported.
+     *
+     * @param group the group to test.
+     * @return {@code true} if {@link FileDescriptorSocketAddress} is supported by {@code group}
+     */
+    static boolean isFileDescriptorSocketAddressSupported(final EventLoopGroup group) {
+        return useEpoll(group) || useKQueue(group);
+    }
+
+    static void tryIoUring(final boolean tryIoUring) {
+        TRY_IO_URING.set(tryIoUring);
+    }
+}

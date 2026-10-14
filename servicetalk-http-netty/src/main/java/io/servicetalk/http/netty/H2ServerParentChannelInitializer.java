@@ -1,0 +1,146 @@
+/*
+ * Copyright © 2019-2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.http.api.Http2Settings;
+import io.servicetalk.logging.api.UserDataLoggerConfig;
+import io.servicetalk.transport.netty.internal.ChannelInitializer;
+
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.codec.http2.DefaultHttp2WindowUpdateFrame;
+import io.netty.handler.codec.http2.Http2CodecUtil;
+import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2MultiplexHandler;
+import io.netty.handler.codec.http2.Http2StreamChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
+
+import static io.servicetalk.logging.slf4j.internal.Slf4jFixedLevelLoggers.newLogger;
+import static java.lang.Long.getLong;
+
+@SuppressWarnings("PMD.LooseCoupling") // Netty's concrete Http2Settings is required by the Netty API
+final class H2ServerParentChannelInitializer implements ChannelInitializer {
+    private static final Logger LOGGER = LoggerFactory.getLogger(H2ServerParentChannelInitializer.class);
+
+    /**
+     * Default advertised {@code SETTINGS_MAX_CONCURRENT_STREAMS} when the user has not configured a value.
+     * RFC 7540 §6.5.2 leaves this setting unbounded when absent; without an advertised cap a peer may open
+     * effectively unbounded streams per connection. Using a value of 100 matches Netty's
+     * {@code Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS} (RFC 7540 §5.1.2 recommended minimum) and the
+     * value the ServiceTalk client assumes when a peer does not advertise this setting — keeping server and
+     * client defaults symmetric.
+     */
+    private static final long DEFAULT_MAX_CONCURRENT_STREAMS_VALUE = 100L;
+
+    // FIXME: 0.43 - remove this temporary property
+    static final String DEFAULT_MAX_CONCURRENT_STREAMS_PROPERTY =
+            "io.servicetalk.http.netty.defaultH2ServerMaxConcurrentStreams";
+    static final long DEFAULT_MAX_CONCURRENT_STREAMS =
+            getLong(DEFAULT_MAX_CONCURRENT_STREAMS_PROPERTY, DEFAULT_MAX_CONCURRENT_STREAMS_VALUE);
+
+    static {
+        if (DEFAULT_MAX_CONCURRENT_STREAMS != DEFAULT_MAX_CONCURRENT_STREAMS_VALUE) {
+            LOGGER.warn("-D{}={} This property will be removed in the future releases. " +
+                            "Configure this value via H2ProtocolConfigBuilder#initialSettings(Http2Settings) with " +
+                            "Http2SettingsBuilder#maxConcurrentStreams(long) instead.",
+                    DEFAULT_MAX_CONCURRENT_STREAMS_PROPERTY, DEFAULT_MAX_CONCURRENT_STREAMS);
+        }
+    }
+
+    private final H2ProtocolConfig config;
+    private final io.netty.channel.ChannelInitializer<Http2StreamChannel> streamChannelInitializer;
+    private final io.netty.handler.codec.http2.Http2Settings nettySettings;
+
+    H2ServerParentChannelInitializer(
+            final H2ProtocolConfig config,
+            final io.netty.channel.ChannelInitializer<Http2StreamChannel> streamChannelInitializer) {
+        this.config = config;
+        this.streamChannelInitializer = streamChannelInitializer;
+        final Http2Settings h2Settings = config.initialSettings();
+        final io.netty.handler.codec.http2.Http2Settings translated = toNettySettings(h2Settings);
+        if (h2Settings.maxConcurrentStreams() == null) {
+            translated.maxConcurrentStreams(DEFAULT_MAX_CONCURRENT_STREAMS);
+        }
+        nettySettings = translated;
+    }
+
+    @Override
+    public void init(final Channel channel) {
+        final Http2FrameCodecBuilder multiplexCodecBuilder =
+                OptimizedHttp2FrameCodecBuilder.newBuilder(true, config)
+                .initialSettings(nettySettings);
+
+        initFrameLogger(multiplexCodecBuilder, config.frameLoggerConfig());
+
+        // TODO(scott): more configuration. header validation, etc...
+
+        channel.pipeline().addLast(multiplexCodecBuilder.build(), new Http2MultiplexHandler(streamChannelInitializer));
+        if (config.flowControlWindowIncrement() > 0) {
+            // Must be after Http2ConnectionHandler does its initialization in handlerAdded above.
+            // The server will not send a connection preface so we are good to send a window update.
+            channel.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                @Override
+                public void channelActive(ChannelHandlerContext ctx) {
+                    ctx.write(new DefaultHttp2WindowUpdateFrame(config.flowControlWindowIncrement()));
+                    ctx.pipeline().remove(this);
+                }
+            });
+        }
+    }
+
+    static void initFrameLogger(final Http2FrameCodecBuilder multiplexCodecBuilder,
+                                @Nullable final UserDataLoggerConfig frameLoggerConfig) {
+        if (frameLoggerConfig != null) {
+            multiplexCodecBuilder.frameLogger(
+                    new ServiceTalkHttp2FrameLogger(newLogger(frameLoggerConfig.loggerName(),
+                            frameLoggerConfig.logLevel()), frameLoggerConfig.logUserData()));
+        }
+    }
+
+    static io.netty.handler.codec.http2.Http2Settings toNettySettings(Http2Settings h2Settings) {
+        io.netty.handler.codec.http2.Http2Settings nettySettings = new io.netty.handler.codec.http2.Http2Settings();
+        h2Settings.forEach((identifier, value) -> {
+            switch (identifier) {
+                case Http2CodecUtil.SETTINGS_HEADER_TABLE_SIZE:
+                    nettySettings.headerTableSize(value);
+                    break;
+                case Http2CodecUtil.SETTINGS_ENABLE_PUSH:
+                    nettySettings.pushEnabled(value != 0);
+                    break;
+                case Http2CodecUtil.SETTINGS_MAX_CONCURRENT_STREAMS:
+                    nettySettings.maxConcurrentStreams(value);
+                    break;
+                case Http2CodecUtil.SETTINGS_INITIAL_WINDOW_SIZE:
+                    nettySettings.initialWindowSize(value.intValue());
+                    break;
+                case Http2CodecUtil.SETTINGS_MAX_FRAME_SIZE:
+                    nettySettings.maxFrameSize(value.intValue());
+                    break;
+                case Http2CodecUtil.SETTINGS_MAX_HEADER_LIST_SIZE:
+                    nettySettings.maxHeaderListSize(value);
+                    break;
+                default:
+                    nettySettings.put(identifier, value);
+                    break;
+            }
+        });
+        return nettySettings;
+    }
+}

@@ -1,0 +1,151 @@
+/*
+ * Copyright © 2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+  id "com.gradleup.shadow" version "$shadowPluginVersion"
+  id "com.google.protobuf" version "$protobufGradlePluginVersion"
+}
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+
+afterEvaluate {
+  if (tasks.findByName("projectHealth")) {
+    dependencyAnalysis {
+      issues {
+        onIncorrectConfiguration {
+          exclude(":servicetalk-data-protobuf")
+        }
+        onUnusedDependencies {
+          exclude(":servicetalk-grpc-protobuf")
+        }
+      }
+    }
+  }
+}
+
+dependencies {
+  // The following api dependencies are required to compile generated classes:
+  api project(":servicetalk-data-protobuf")
+  api project(":servicetalk-grpc-protobuf")
+
+  compileOnly "com.squareup:javapoet:$javaPoetVersion"
+
+  implementation platform("com.google.protobuf:protobuf-bom:$protobufVersion")
+  implementation project(":servicetalk-annotations")
+  implementation "com.google.protobuf:protobuf-java"
+
+  testImplementation enforcedPlatform("org.junit:junit-bom:$junit5Version")
+  testImplementation project(":servicetalk-concurrent")
+  testImplementation project(":servicetalk-concurrent-api")
+  testImplementation project(":servicetalk-encoding-api")
+  testImplementation project(":servicetalk-grpc-api")
+  testImplementation project(":servicetalk-grpc-protobuf")
+  testImplementation project(":servicetalk-router-api")
+  testImplementation project(":servicetalk-serializer-api")
+  testImplementation "org.junit.jupiter:junit-jupiter-api"
+  testImplementation "org.hamcrest:hamcrest:$hamcrestVersion"
+
+  testRuntimeOnly "com.squareup:javapoet:$javaPoetVersion"
+}
+
+jar {
+  manifest {
+    attributes "Implementation-Title": "ServiceTalk gRPC Protoc Plugin",
+        "Implementation-Version": project.version,
+        "Main-Class": "io.servicetalk.grpc.protoc.Main"
+  }
+}
+
+shadowJar {
+  // includes javaPoet and Google protobufs
+  configurations = [project.configurations.compileClasspath]
+  archiveBaseName = project.name
+  archiveClassifier = 'all'
+}
+
+def grpcPluginUberJarName = project.name + "-" + project.version + "-all.jar"
+
+task buildExecutable(type: Copy) {
+  dependsOn tasks.shadowJar
+  from shadowJar.outputs.files.singleFile
+  into file("$buildDir/buildExecutable")
+
+  rename { fileName ->
+    return grpcPluginUberJarName
+  }
+}
+tasks.compileJava.finalizedBy(buildExecutable)
+
+protobuf {
+  protoc {
+    artifact = "com.google.protobuf:protoc:$protobufVersion"
+  }
+  def pluginJar = file("${buildExecutable.destinationDir}/$grpcPluginUberJarName")
+  // Used for testing
+  plugins {
+    servicetalk_grpc {
+      path = pluginJar
+    }
+  }
+  generateProtoTasks {
+    all().each { task ->
+      io.servicetalk.gradle.plugin.internal.ProjectUtils.addGeneratedProtoDependsOn(project, task, true)
+      task.generateDescriptorSet = true
+      task.descriptorSetOptions.includeImports = true
+      task.inputs
+          .file(pluginJar)
+          .withNormalizer(ClasspathNormalizer)
+          .withPropertyName("servicetalkPluginJar")
+          .withPathSensitivity(PathSensitivity.RELATIVE)
+
+      if (task.isTest) {
+        task.dependsOn(buildExecutable)
+      }
+
+      task.plugins {
+        servicetalk_grpc {
+          // Need to tell protobuf-gradle-plugin to output in the correct directory if all generated
+          // code for a single proto goes to a single file (e.g. "java_multiple_files = false" in the .proto).
+          outputSubDir = "java"
+        }
+      }
+    }
+  }
+}
+
+afterEvaluate {
+  // break the circular dependency (compileJava->generateProto->buildExecutable->compileJava).
+  generateProto.enabled = false
+}
+
+task testJavadoc(type: Javadoc) {
+  enabled = !JavaVersion.current().isJava8() // jdk8 has a javadoc lint check bug, skip it.
+  dependsOn tasks.compileTestJava
+
+  source = protobuf.generatedFilesBaseDir
+  exclude "**/*.desc"
+  classpath = sourceSets.test.compileClasspath
+  destinationDir = file("$buildDir/tmp/testjavadoc")
+  options.addBooleanOption("Xwerror", true)
+  options.addBooleanOption("Xdoclint:all,-missing", true)
+  options.addBooleanOption("protected", true)
+}
+
+test.finalizedBy(testJavadoc)
+
+test {
+  systemProperty 'generatedFilesBaseDir', protobuf.generatedFilesBaseDir
+}

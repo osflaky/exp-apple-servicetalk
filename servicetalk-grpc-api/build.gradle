@@ -1,0 +1,52 @@
+/*
+ * Copyright © 2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+
+dependencies {
+  api project(":servicetalk-concurrent")
+  api project(":servicetalk-concurrent-api")
+  api project(":servicetalk-context-api")
+  api project(":servicetalk-encoding-api")
+  api project(":servicetalk-http-api")
+  api project(":servicetalk-oio-api")
+  api project(":servicetalk-router-api")
+  api project(":servicetalk-serializer-api")
+  api project(":servicetalk-transport-api")
+  api ("com.google.api.grpc:proto-google-common-protos:$protoGoogleCommonProtosVersion") {
+    exclude group: "com.google.protobuf"
+  }
+
+  implementation platform("com.google.protobuf:protobuf-bom:$protobufVersion")
+  implementation project(":servicetalk-annotations")
+  implementation project(":servicetalk-buffer-api")
+  implementation project(":servicetalk-concurrent-api-internal")
+  implementation project(":servicetalk-concurrent-internal")
+  implementation project(":servicetalk-encoding-api-internal")
+  implementation project(":servicetalk-grpc-internal")
+  implementation project(":servicetalk-http-utils")
+  implementation project(":servicetalk-router-utils-internal")
+  implementation project(":servicetalk-serializer-utils")
+  implementation project(":servicetalk-utils-internal")
+  implementation "com.google.protobuf:protobuf-java"
+  implementation "org.slf4j:slf4j-api:$slf4jVersion"
+
+  testImplementation enforcedPlatform("org.junit:junit-bom:$junit5Version")
+  testImplementation project(":servicetalk-test-resources")
+  testImplementation "org.hamcrest:hamcrest"
+  testImplementation "org.junit.jupiter:junit-jupiter-api"
+  testImplementation "org.junit.jupiter:junit-jupiter-params"
+}

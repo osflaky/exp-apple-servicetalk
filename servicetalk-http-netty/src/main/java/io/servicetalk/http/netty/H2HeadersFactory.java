@@ -1,0 +1,122 @@
+/*
+ * Copyright © 2019, 2021-2022 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.http.api.DefaultHttpHeadersFactory;
+import io.servicetalk.http.api.HttpHeaders;
+import io.servicetalk.http.api.HttpHeadersFactory;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static java.lang.Boolean.parseBoolean;
+import static java.lang.System.getProperty;
+
+/**
+ * A {@link HttpHeadersFactory} optimized for HTTP/2.
+ *
+ * @deprecated Use {@link DefaultHttpHeadersFactory} instead
+ */
+@Deprecated // FIXME: 0.43 - remove deprecated class
+public final class H2HeadersFactory implements HttpHeadersFactory {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(H2HeadersFactory.class);
+    // FIXME: 0.43 - remove this temporary property
+    static final String DEFAULT_VALIDATE_VALUES_PROPERTY =
+            "io.servicetalk.http.api.temporaryDefaultValidateHeaderValues";
+    private static final boolean DEFAULT_VALIDATE_VALUES = defaultValidateValues();
+
+    public static final HttpHeadersFactory INSTANCE = new H2HeadersFactory(true, true, DEFAULT_VALIDATE_VALUES);
+
+    static {
+        if (!DEFAULT_VALIDATE_VALUES) {
+            LOGGER.warn("-D{}={} This property will be removed in the future releases. " +
+                            "Configure this value via H2HeadersFactory constructor instead.",
+                    DEFAULT_VALIDATE_VALUES_PROPERTY, DEFAULT_VALIDATE_VALUES);
+        }
+    }
+
+    private final HttpHeadersFactory underlying;
+
+    /**
+     * Create an instance of the factory with the default array size hint.
+     *
+     * @param validateNames {@code true} to validate header/trailer names.
+     * @param validateCookies {@code true} to validate cookie contents when parsing.
+     * @param validateValues {@code true} to validate header values.
+     */
+    public H2HeadersFactory(final boolean validateNames, final boolean validateCookies,
+                            final boolean validateValues) {
+        this(validateNames, validateCookies, validateValues, 16, 4);
+    }
+
+    /**
+     * Create an instance of the factory.
+     *
+     * @param validateNames {@code true} to validate header/trailer names.
+     * @param validateCookies {@code true} to validate cookie contents when parsing.
+     * @param validateValues {@code true} to validate header values.
+     * @param headersArraySizeHint A hint as to how large the hash data structure should be for the headers.
+     * @param trailersArraySizeHint A hint as to how large the hash data structure should be for the trailers.
+     */
+    public H2HeadersFactory(final boolean validateNames, final boolean validateCookies,
+                            final boolean validateValues,
+                            final int headersArraySizeHint, final int trailersArraySizeHint) {
+        this.underlying = new DefaultHttpHeadersFactory(validateNames, validateCookies, validateValues,
+                headersArraySizeHint, trailersArraySizeHint);
+    }
+
+    @Override
+    public HttpHeaders newHeaders() {
+        return underlying.newHeaders();
+    }
+
+    @Override
+    public HttpHeaders newTrailers() {
+        return underlying.newTrailers();
+    }
+
+    @Override
+    public HttpHeaders newEmptyTrailers() {
+        return underlying.newEmptyTrailers();
+    }
+
+    @Override
+    public boolean validateNames() {
+        return underlying.validateNames();
+    }
+
+    @Override
+    public boolean validateCookies() {
+        return underlying.validateCookies();
+    }
+
+    @Override
+    public boolean validateValues() {
+        return underlying.validateValues();
+    }
+
+    static boolean defaultValidateValues() {
+        return parseBoolean(getProperty(DEFAULT_VALIDATE_VALUES_PROPERTY, "true"));
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() +
+                "{underlying: " + underlying +
+                '}';
+    }
+}

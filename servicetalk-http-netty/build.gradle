@@ -1,0 +1,139 @@
+/*
+ * Copyright © 2018-2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+
+afterEvaluate {
+    if (tasks.findByName("projectHealth")) {
+        dependencyAnalysis {
+            issues {
+                // FIXME: 0.43 - remove after dropping support for Netty 4.1.x
+                onUnusedDependencies {
+                    exclude("io.netty:netty-codec")
+                }
+                onUsedTransitiveDependencies {
+                    exclude("io.netty:netty-codec-base")
+                }
+            }
+        }
+    }
+}
+
+dependencies {
+  api project(":servicetalk-client-api")
+  api project(":servicetalk-concurrent-api")
+  api project(":servicetalk-context-api")
+  api project(":servicetalk-http-api")
+  api project(":servicetalk-logging-api")
+  api project(":servicetalk-transport-api")
+
+  implementation platform("io.netty:netty-bom:$nettyVersion")
+  implementation project(":servicetalk-annotations")
+  implementation project(":servicetalk-buffer-api")
+  implementation project(":servicetalk-buffer-netty")
+  implementation project(":servicetalk-client-api-internal")
+  implementation project(":servicetalk-concurrent")
+  implementation project(":servicetalk-concurrent-api-internal")
+  implementation project(":servicetalk-concurrent-internal")
+  implementation project(":servicetalk-dns-discovery-netty")
+  implementation project(":servicetalk-http-utils")
+  implementation project(":servicetalk-loadbalancer")
+  implementation project(":servicetalk-logging-slf4j-internal")
+  implementation project(":servicetalk-tcp-netty-internal")
+  implementation project(":servicetalk-transport-netty-internal")
+  implementation project(":servicetalk-utils-internal")
+  implementation "io.netty:netty-buffer"
+  implementation "io.netty:netty-codec"
+  implementation "io.netty:netty-codec-http"
+  implementation "io.netty:netty-codec-http2"
+  implementation "io.netty:netty-common"
+  implementation "io.netty:netty-handler"
+  implementation "io.netty:netty-transport"
+  implementation "org.slf4j:slf4j-api:$slf4jVersion"
+
+  testImplementation enforcedPlatform("com.fasterxml.jackson:jackson-bom:$jacksonVersion")
+  testImplementation enforcedPlatform("org.junit:junit-bom:$junit5Version")
+  testImplementation testFixtures(project(":servicetalk-buffer-api"))
+  testImplementation testFixtures(project(":servicetalk-concurrent-api"))
+  testImplementation testFixtures(project(":servicetalk-concurrent-internal"))
+  testImplementation testFixtures(project(":servicetalk-http-api"))
+  testImplementation testFixtures(project(":servicetalk-log4j2-mdc-utils"))
+  testImplementation testFixtures(project(":servicetalk-transport-netty-internal"))
+  testImplementation project(":servicetalk-concurrent-api-test")
+  testImplementation project(":servicetalk-concurrent-test-internal")
+  testImplementation project(":servicetalk-data-jackson")
+  testImplementation project(":servicetalk-encoding-api")
+  testImplementation project(":servicetalk-encoding-api-internal")
+  testImplementation project(":servicetalk-encoding-netty")
+  testImplementation project(":servicetalk-loadbalancer-experimental-provider")
+  testImplementation project(":servicetalk-oio-api")
+  testImplementation project(":servicetalk-serializer-api")
+  testImplementation project(":servicetalk-test-resources")
+  testImplementation project(":servicetalk-transport-netty")
+  testImplementation "com.fasterxml.jackson.core:jackson-core"
+  testImplementation "io.netty:netty-transport-classes-io_uring"
+  testImplementation "org.junit.jupiter:junit-jupiter-api"
+  testImplementation "org.junit.jupiter:junit-jupiter-params"
+  testImplementation "org.hamcrest:hamcrest:$hamcrestVersion"
+  testImplementation "org.mockito:mockito-core:$mockitoCoreVersion"
+  testImplementation "org.mockito:mockito-junit-jupiter:$mockitoCoreVersion"
+  testImplementation "org.testng:testng:$testngVersion"
+
+  testFixturesApi project(":servicetalk-context-api")
+  testFixturesApi project(":servicetalk-http-api")
+  testFixturesApi project(":servicetalk-transport-api")
+
+  testFixturesImplementation testFixtures(project(":servicetalk-transport-netty-internal"))
+  testFixturesImplementation project(":servicetalk-buffer-api")
+  testFixturesImplementation project(":servicetalk-concurrent")
+  testFixturesImplementation project(":servicetalk-http-utils")
+  testFixturesImplementation project(":servicetalk-test-resources")
+  testFixturesImplementation "com.google.code.findbugs:jsr305:$jsr305Version"
+  testFixturesImplementation "org.slf4j:slf4j-api:$slf4jVersion"
+  testFixturesImplementation "org.hamcrest:hamcrest:$hamcrestVersion"
+}
+
+// We need testng for the reactive-streams-tck
+task tck(type: Test) {
+  useTestNG()
+}
+test.dependsOn tck
+
+sourceSets {
+  testProps {
+    java {
+      compileClasspath += main.output + test.output
+      runtimeClasspath += main.output + test.output
+      srcDirs("src/test")
+      include "**/H2PriorKnowledgeFeatureParityTest.java"
+    }
+  }
+}
+
+configurations {
+  testPropsImplementation.extendsFrom testImplementation
+  testPropsRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+task testProps(type: Test) {
+  useJUnitPlatform()
+  testClassesDirs = sourceSets.testProps.output.classesDirs
+  classpath = sourceSets.testProps.runtimeClasspath
+  systemProperty 'io.servicetalk.http.api.headers.cookieParsingStrictRfc6265', 'true'
+}
+test.dependsOn testProps
+// ServiceTalkLibraryPlugin adds a spotbugs task for each sourceSet, we don't need it.
+spotbugsTestProps.enabled = false

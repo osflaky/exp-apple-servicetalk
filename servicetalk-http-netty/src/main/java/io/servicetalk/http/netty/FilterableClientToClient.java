@@ -1,0 +1,306 @@
+/*
+ * Copyright © 2019 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.concurrent.api.Completable;
+import io.servicetalk.concurrent.api.Publisher;
+import io.servicetalk.concurrent.api.Single;
+import io.servicetalk.concurrent.internal.RejectedSubscribeException;
+import io.servicetalk.context.api.ContextMap;
+import io.servicetalk.http.api.BlockingHttpClient;
+import io.servicetalk.http.api.BlockingStreamingHttpClient;
+import io.servicetalk.http.api.FilterableStreamingHttpClient;
+import io.servicetalk.http.api.HttpClient;
+import io.servicetalk.http.api.HttpConnectionContext;
+import io.servicetalk.http.api.HttpEventKey;
+import io.servicetalk.http.api.HttpExecutionContext;
+import io.servicetalk.http.api.HttpExecutionStrategy;
+import io.servicetalk.http.api.HttpRequestMetaData;
+import io.servicetalk.http.api.HttpRequestMethod;
+import io.servicetalk.http.api.ReservedBlockingHttpConnection;
+import io.servicetalk.http.api.ReservedBlockingStreamingHttpConnection;
+import io.servicetalk.http.api.ReservedHttpConnection;
+import io.servicetalk.http.api.ReservedStreamingHttpConnection;
+import io.servicetalk.http.api.StreamingHttpClient;
+import io.servicetalk.http.api.StreamingHttpRequest;
+import io.servicetalk.http.api.StreamingHttpRequester;
+import io.servicetalk.http.api.StreamingHttpResponse;
+import io.servicetalk.http.api.StreamingHttpResponseFactory;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static io.servicetalk.context.api.ContextMap.Key.newKey;
+import static io.servicetalk.http.api.HttpApiConversions.toBlockingClient;
+import static io.servicetalk.http.api.HttpApiConversions.toBlockingStreamingClient;
+import static io.servicetalk.http.api.HttpApiConversions.toClient;
+import static io.servicetalk.http.api.HttpApiConversions.toReservedBlockingConnection;
+import static io.servicetalk.http.api.HttpApiConversions.toReservedBlockingStreamingConnection;
+import static io.servicetalk.http.api.HttpApiConversions.toReservedConnection;
+import static io.servicetalk.http.api.HttpContextKeys.HTTP_EXECUTION_STRATEGY_KEY;
+import static java.lang.Boolean.getBoolean;
+
+final class FilterableClientToClient implements StreamingHttpClient {
+    private static final Logger LOGGER = LoggerFactory.getLogger(FilterableClientToClient.class);
+
+    private static final String SKIP_CONCURRENT_REQUEST_CHECK_PROPERTY =
+            "io.servicetalk.http.netty.skipConcurrentRequestCheck";
+    private static final boolean SKIP_CONCURRENT_REQUEST_CHECK = getBoolean(SKIP_CONCURRENT_REQUEST_CHECK_PROPERTY);
+    private static final ContextMap.Key<Object> HTTP_IN_FLIGHT_REQUEST =
+            newKey("HTTP_IN_FLIGHT_REQUEST", Object.class);
+    private static final ContextMap.Key<Throwable> HTTP_IN_FLIGHT_REQUEST_STACK_TRACE =
+            newKey("HTTP_IN_FLIGHT_REQUEST_STACK_TRACE", Throwable.class);
+
+    static {
+        if (SKIP_CONCURRENT_REQUEST_CHECK) {
+            LOGGER.warn("-D{}={} DANGEROUS_CONFIG_WARNING: Skipping this check may lead to corrupted request " +
+                    "meta-data and issues that are hard to debug. Address business logic that causes " +
+                    "RejectedSubscribeException and remove property that disables it. Enable DEBUG level logging for " +
+                    "this class to enhance RejectedSubscribeException with additional diagnostics data.",
+                    SKIP_CONCURRENT_REQUEST_CHECK_PROPERTY, SKIP_CONCURRENT_REQUEST_CHECK);
+        }
+    }
+
+    private final Object lock = new Object();
+    private final FilterableStreamingHttpClient client;
+    private final HttpExecutionContext executionContext;
+    // Human-readable identifier of what this client connects to, surfaced via toString() so callers holding only a
+    // StreamingHttpClient (e.g. the gRPC layer) can log which client it is.
+    private final Object targetAddress;
+
+    FilterableClientToClient(FilterableStreamingHttpClient filteredClient, HttpExecutionContext executionContext,
+                             Object targetAddress) {
+        client = filteredClient;
+        this.executionContext = executionContext;
+        this.targetAddress = targetAddress;
+    }
+
+    @Override
+    public HttpClient asClient() {
+        return toClient(this, executionContext.executionStrategy());
+    }
+
+    @Override
+    public BlockingStreamingHttpClient asBlockingStreamingClient() {
+        return toBlockingStreamingClient(this, executionContext.executionStrategy());
+    }
+
+    @Override
+    public BlockingHttpClient asBlockingClient() {
+        return toBlockingClient(this, executionContext.executionStrategy());
+    }
+
+    @Override
+    public Single<StreamingHttpResponse> request(final StreamingHttpRequest request) {
+        return executeRequest(client, request, executionContext().executionStrategy(), lock);
+    }
+
+    @Override
+    public Single<ReservedStreamingHttpConnection> reserveConnection(final HttpRequestMetaData metaData) {
+        return Single.defer(() -> {
+            HttpExecutionStrategy clientstrategy = executionContext().executionStrategy();
+            setExecutionStrategy(metaData, clientstrategy);
+            return client.reserveConnection(metaData).map(rc -> new ReservedStreamingHttpConnection() {
+                @Override
+                public ReservedHttpConnection asConnection() {
+                    return toReservedConnection(this, clientstrategy);
+                }
+
+                @Override
+                public ReservedBlockingStreamingHttpConnection asBlockingStreamingConnection() {
+                    return toReservedBlockingStreamingConnection(this, clientstrategy);
+                }
+
+                @Override
+                public ReservedBlockingHttpConnection asBlockingConnection() {
+                    return toReservedBlockingConnection(this, clientstrategy);
+                }
+
+                @Override
+                public Completable releaseAsync() {
+                    return rc.releaseAsync();
+                }
+
+                @Override
+                public Single<StreamingHttpResponse> request(final StreamingHttpRequest request) {
+                    // Use the strategy from the client as the underlying ReservedStreamingHttpConnection may be user
+                    // created and hence could have an incorrect default strategy. Doing this makes sure we never call
+                    // the method without strategy just as we do for the regular connection.
+                    return executeRequest(rc, request, clientstrategy, lock);
+                }
+
+                @Override
+                public HttpConnectionContext connectionContext() {
+                    return rc.connectionContext();
+                }
+
+                @Override
+                public <T> Publisher<? extends T> transportEventStream(final HttpEventKey<T> eventKey) {
+                    return rc.transportEventStream(eventKey);
+                }
+
+                @Override
+                public HttpExecutionContext executionContext() {
+                    return rc.executionContext();
+                }
+
+                @Override
+                public StreamingHttpResponseFactory httpResponseFactory() {
+                    return rc.httpResponseFactory();
+                }
+
+                @Override
+                public Completable onClose() {
+                    return rc.onClose();
+                }
+
+                @Override
+                public Completable onClosing() {
+                    return rc.onClosing();
+                }
+
+                @Override
+                public Completable closeAsync() {
+                    return rc.closeAsync();
+                }
+
+                @Override
+                public Completable closeAsyncGracefully() {
+                    return rc.closeAsyncGracefully();
+                }
+
+                @Override
+                public StreamingHttpRequest newRequest(final HttpRequestMethod method, final String requestTarget) {
+                    return rc.newRequest(method, requestTarget);
+                }
+            }).shareContextOnSubscribe();
+        });
+    }
+
+    @Override
+    public HttpExecutionContext executionContext() {
+        return executionContext;
+    }
+
+    @Override
+    public StreamingHttpResponseFactory httpResponseFactory() {
+        return client.httpResponseFactory();
+    }
+
+    @Override
+    public Completable onClose() {
+        return client.onClose();
+    }
+
+    @Override
+    public Completable onClosing() {
+        return client.onClosing();
+    }
+
+    @Override
+    public Completable closeAsync() {
+        return client.closeAsync();
+    }
+
+    @Override
+    public Completable closeAsyncGracefully() {
+        return client.closeAsyncGracefully();
+    }
+
+    @Override
+    public StreamingHttpRequest newRequest(final HttpRequestMethod method, final String requestTarget) {
+        return client.newRequest(method, requestTarget);
+    }
+
+    private static Single<StreamingHttpResponse> executeRequest(final StreamingHttpRequester requester,
+                                                                final StreamingHttpRequest request,
+                                                                final HttpExecutionStrategy strategy,
+                                                                final Object lock) {
+        return Single.defer(() -> {
+            if (SKIP_CONCURRENT_REQUEST_CHECK) {
+                return setStrategyAndExecute(requester, request, strategy).shareContextOnSubscribe();
+            }
+
+            // Prevent concurrent execution of the same request through the same layer.
+            // In general, we do not expect users to execute the same mutable request concurrently. Therefore, the cost
+            // of synchronized block should be negligible for most requests, unless they messed up with reactive streams
+            // chain and accidentally subscribed to the same request concurrently. This protection helps them avoid
+            // ambiguous runtime behavior caused by a corrupted mutable request state.
+            final Object inFlight;
+            final boolean debugEnabled = LOGGER.isDebugEnabled();
+            // Note that because request.context() may lazily allocate a new ContextMap, there is a risk that
+            // synchronization will happen on two different contexts. However, this is acceptable compromise because:
+            //  - Most likely users subscribe 2+ times to the same request from the same thread.
+            //  - This is the best effort protection, giving users at least one rejection should be enough to let them
+            //    know their code is incorrect and should be rewritten.
+            final ContextMap context = request.context();
+            synchronized (context) {
+                // We do not override lock because other layers may already set their own one.
+                inFlight = context.putIfAbsent(HTTP_IN_FLIGHT_REQUEST, lock);
+                // Only capture stack trace if we were the first to set the lock and debug logging is enabled
+                if (inFlight == null && debugEnabled) {
+                    context.put(HTTP_IN_FLIGHT_REQUEST_STACK_TRACE, new Throwable("First subscribe stack trace"));
+                }
+            }
+            if (lock.equals(inFlight)) {
+                // Concurrent execution detected - get first subscribe location if available
+                Throwable cause = null;
+                if (debugEnabled) {
+                    cause = context.get(HTTP_IN_FLIGHT_REQUEST_STACK_TRACE);
+                }
+
+                return Single.<StreamingHttpResponse>failed(new RejectedSubscribeException(
+                        "Concurrent execution is detected for the same mutable request. Only a single execution is " +
+                                "allowed at any point of time. Otherwise, request data structures can be corrupted. " +
+                                "To avoid this error, create a new request for every execution or wrap every request " +
+                                "creation with Single.defer() operator.", cause))
+                        .shareContextOnSubscribe();
+            }
+
+            Single<StreamingHttpResponse> response = setStrategyAndExecute(requester, request, strategy);
+            if (inFlight == null) {
+                // Remove only if we are the one who set the lock.
+                response = response.beforeFinally(() -> {
+                    synchronized (context) {
+                        final Object removedLock = context.remove(HTTP_IN_FLIGHT_REQUEST);
+                        assert removedLock == lock;
+                        if (debugEnabled) {
+                            context.remove(HTTP_IN_FLIGHT_REQUEST_STACK_TRACE);
+                        }
+                    }
+                });
+            }
+            return response.shareContextOnSubscribe();
+        });
+    }
+
+    private static Single<StreamingHttpResponse> setStrategyAndExecute(final StreamingHttpRequester requester,
+                                                                       final StreamingHttpRequest request,
+                                                                       final HttpExecutionStrategy strategy) {
+        setExecutionStrategy(request, strategy);
+        return requester.request(request);
+    }
+
+    private static void setExecutionStrategy(final HttpRequestMetaData request, final HttpExecutionStrategy strategy) {
+        // We do not override HttpExecutionStrategy because users may prefer to use their own.
+        request.context().putIfAbsent(HTTP_EXECUTION_STRATEGY_KEY, strategy);
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName() + '{' + targetAddress + '}';
+    }
+}

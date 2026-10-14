@@ -1,0 +1,226 @@
+// Configure {source-root} values based on how this document is rendered: on GitHub or not
+ifdef::env-github[]
+:source-root:
+endif::[]
+ifndef::env-github[]
+ifndef::source-root[:source-root: https://github.com/apple/servicetalk/blob/{page-origin-refname}]
+endif::[]
+
+= gRPC
+
+== Motivation
+
+A design philosophy for ServiceTalk is
+xref:{page-version}@servicetalk::index.adoc#cross-protocol-api-symmetry[cross protocol API symmetry] which means that
+all protocols supported by ServiceTalk should have same constructs and follow the same design principles. We acknowledge
+that link:https://github.com/grpc/grpc-java[grpc-java] implements the
+link:https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md[gRPC wire protocol] for the JVM and is used
+extensively. However, our xref:{page-version}@servicetalk::index.adoc#design-philosophy[design philosophies] are
+different than
+link:https://github.com/grpc/grpc-java[grpc-java] and ServiceTalk also provides
+link:https://datatracker.ietf.org/doc/html/rfc7540[HTTP/2] directly for users. The
+link:https://github.com/grpc/grpc-java[grpc-java] team and the ServiceTalk team collaborated to bring
+link:https://datatracker.ietf.org/doc/html/rfc7540[HTTP/2] support to Netty, and both share the same underlying protocol
+implementation. Once you have link:https://datatracker.ietf.org/doc/html/rfc7540[HTTP/2] support the investment to support the
+link:https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md[gRPC wire protocol] is relatively small but it
+enables ServiceTalk users to benefit from our
+xref:{page-version}@servicetalk::index.adoc#DesignPhilosophy[design philosophy] consistently across all protocols.
+
+== Overview
+gRPC support in ServiceTalk implements the
+link:https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md[gRPC wire protocol] and provides ServiceTalk APIs
+for that protocol. It provides all the different
+xref:{page-version}@servicetalk::programming-paradigms.adoc[Programming Paradigms] for client and server.
+Here is a quick start example of the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#blocking-and-aggregated[blocking and aggregated] paradigm:
+
+**Blocking Client**
+
+See
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/blocking/BlockingHelloWorldClient.java[BlockingHelloWorldClient].
+[source, java]
+----
+try (BlockingGreeterClient client = GrpcClients.forAddress("localhost", 8080)
+        .buildBlocking(new ClientFactory())) {
+    HelloReply reply = client.sayHello(HelloRequest.newBuilder().setName("Foo").build());
+    // use the response
+}
+----
+
+**Blocking Server**
+
+See
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/blocking/BlockingHelloWorldServer.java[BlockingHelloWorldServer].
+[source, java]
+----
+GrpcServers.forPort(8080)
+        .listenAndAwait(new ServiceFactory((BlockingGreeterService) (ctx, request) ->
+                HelloReply.newBuilder().setMessage("Hello " + request.getName()).build()))
+        .awaitShutdown();
+----
+
+[#maxInboundMessageSize]
+== Inbound message size limit
+
+To bound memory use, ServiceTalk limits the size of a single decoded inbound gRPC message. The limit applies on the
+receiving side of every paradigm: a server bounds request messages, a client bounds response messages. For a compressed
+message it bounds the on-wire (still-compressed) length before buffering, and the decoded length after decompression.
+
+Configure it with `GrpcServerBuilder#maxInboundMessageSize(int)` / `GrpcClientBuilder#maxInboundMessageSize(int)`,
+where the sign selects the mode and the magnitude selects the threshold: a *positive* value enforces the limit,
+rejecting a message whose declared length exceeds it with `RESOURCE_EXHAUSTED` *before* its payload is buffered; a
+*negative* value enables *warn-only* mode at `abs(value)` bytes, where an oversized message is delivered but a
+rate-limited warning is logged per client/server instead of being rejected; and `0` disables
+the limit. By default the client warns at 64 MiB and the server warns at 16 MiB; enforcing is planned to become the
+default for servers in a future release.
+
+The built-in defaults can be overridden globally with the
+`io.servicetalk.grpc.netty.defaultClientMaxInboundMessageSize` and
+`io.servicetalk.grpc.netty.defaultServerMaxInboundMessageSize` system properties (same sign convention); a per-builder
+call takes precedence.
+
+NOTE: `maxInboundMessageSize` does not bound the memory used *while* decompressing a compressed message. That is
+governed independently by the codec's own decompressed-bytes cap (`ZipCompressionBuilder#maxDecompressedBytes(long)`,
+*64 MiB* by default), which fails fast before the decoded message is checked against `maxInboundMessageSize`.
+
+== Extensibility and Filters
+The design of this protocol involves configuring builders for core protocol concerns, and then appending `Filters` for
+extensibility. `Filters` are described in more detail below but in general they facilitate user code to
+filter/intercept/modify the request/response processing. `Filters` can be used for
+cross-cutting concerns such as authentication, authorization, logging, metrics, tracing, etc...
+
+== Server
+The server side is built around the concept of `Service`. A `Service` is where your business logic lives. Interface for
+user service is generated from a provided link:https://developers.google.com/protocol-buffers/[protocol buffers]
+service definition. Users implement this interface and provide it to the ServiceTalk gRPC server.
+ServiceTalk internally uses the existing xref:{page-version}@servicetalk-http-api::index.adoc[HTTP module] as the
+transport for gRPC. The flow of data from the socket to the gRPC `Service` is visualized as follows:
+
+[ditaa]
+----
++--------+ request  +---------+       +----------+ request  +---------+       +----------+
+|        |--------->|  HTTP   |------>|  HTTP    |--------->|  gRPC   |------>|  gRPC    |
+| Socket |          | Decoder |       | Service  |          | Decoder |       | Service  |
+|        |<---------| Encoder |<------|(for gRPC)|<---------| Encoder |<------|          |
++--------+ response +---------+       +----------+ response +---------+       +----------+
+----
+
+Each `Service` has access to a
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcServiceContext.java[GrpcServiceContext]
+which provides additional context
+(via link:{source-root}/servicetalk-transport-api/src/main/java/io/servicetalk/transport/api/ConnectionContext.java[ConnectionContext])
+into the `Connection`/transport details for each request/response. This means that a `GrpcService` method may be invoked
+for multiple connections, from different threads, and even concurrently.
+
+[#ServerHttpFilters]
+=== HTTP Filters
+
+As gRPC module is built on top of xref:{page-version}@servicetalk-http-api::index.adoc[HTTP module], one can use the
+xref:{page-version}@servicetalk-http-api::index.adoc#service-filters[HTTP service filters] if required to intercept the
+HTTP layer.
+
+=== gRPC Filters
+
+WARNING: gRPC Service Filters have been deprecated and will be removed in a future release. Please use
+<<index#ServerHttpFilters, HTTP service filters>> or implement the interception logic in the particular service definition
+if decoded protos are required.
+
+In addition to HTTP filters, gRPC users can also add gRPC filters which follow the same interface definition as the
+service and can be composed using the generated
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcServiceFactory.java[GrpcServiceFactory]
+for a particular service definition.
+
+== Client
+A `Client` is created via the
+link:{source-root}/servicetalk-grpc-netty/src/main/java/io/servicetalk/grpc/netty/GrpcClients.java[GrpcClients] static
+factory. It manages multiple `Connections` via a xref:{page-version}@servicetalk-loadbalancer::index.adoc[LoadBalancer].
+The control flow of a request/response can be visualized in the below diagram:
+
+[ditaa]
+----
+                                                                                   +--------------+     +----------------------+     +--------+
+                                                                              /--->| Connection 1 |<--->| HTTP Decoder/Encoder |<--->| Socket |
+                                                                              |    +--------------+     +----------------------+     +--------+
++--------+ request  +---------+       +--------+ request  +--------------+    |
+|  gRPC  |--------->|  gRPC   |------>|  HTTP  |--------->|              |    |    +--------------+     +----------------------+     +--------+
+| Client |          | Decoder |       | Client |          | LoadBalancer |<---+--->| Connection 2 |<--->| HTTP Decoder/Encoder |<--->| Socket |
+|        |<---------| Encoder |<------|        |<---------|              |    |    +--------------+     +----------------------+     +--------+
++--------+ response +---------+       +--------+ response +--------------+    |
+                                                                              |    +--------------+     +----------------------+     +--------+
+                                                                              \--->| Connection x |<--->| HTTP Decoder/Encoder |<--->| Socket |
+                                                                                   +--------------+     +----------------------+     +--------+
+----
+
+The xref:{page-version}@servicetalk-loadbalancer::index.adoc[LoadBalancer] is consulted for each request to determine
+which connection should be used.
+
+[#ClientHttpFilters]
+=== HTTP Filters
+As gRPC module is built on top of xref:{page-version}@servicetalk-http-api::index.adoc[HTTP module], one can use the
+xref:{page-version}@servicetalk-http-api::index.adoc#client-filters[HTTP client filters] if required to intercept the
+HTTP layer.
+
+=== gRPC Filters
+
+WARNING: gRPC Client Filters have been deprecated and will be removed in a future release. Please use
+<<index#ClientHttpFilters, HTTP service filters>> or implement the interception logic in the particular
+service definition if decoded protos are required.
+
+In addition to HTTP filters, gRPC users can also add gRPC filters which follow the same interface definition as the
+service and can be composed using the generated
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcClientFactory.java[GrpcClientFactory]
+for a particular service definition.
+
+=== Connection Filters
+
+gRPC clients support adding xref:{page-version}@servicetalk-http-api::index.adoc#connection-filters[connection filters]
+similar to the xref:{page-version}@servicetalk-http-api::index.adoc#client[HTTP Client].
+
+=== Service Discovery
+
+gRPC client uses xref:{page-version}@servicetalk-client-api::service-discovery.adoc[Service Discovery] to discover
+instances of the target service similar to the xref:{page-version}@servicetalk-http-api::index.adoc#client[HTTP Client].
+
+== Error Handling
+
+When a `Service` fails, ServiceTalk maps the `Throwable` to a
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcStatus.java[GrpcStatus] that is sent
+to the client as the `grpc-status` and (optionally) `grpc-message` trailers. Well-known exception types are mapped to
+specific status codes; any other exception is mapped to `UNKNOWN`.
+
+[#returningErrors]
+=== Returning an error from a service
+
+To return a meaningful, client-facing error, a `Service` should fail with a
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcStatusException.java[GrpcStatusException]
+that it constructs explicitly — either by throwing it (blocking APIs) or by completing the `Single`/`Publisher`
+with it (asynchronous APIs). The status code and description you put on it are sent **verbatim** on the wire.
+
+For most errors the ServiceTalk-native `GrpcStatus` (a status code and an optional human-readable description) is all
+you need:
+
+[source, java]
+----
+// Sent as the grpc-status / grpc-message trailers:
+throw new GrpcStatusException(new GrpcStatus(GrpcStatusCode.INVALID_ARGUMENT, "id must be positive"));
+----
+
+When you need to attach structured, typed error detail (the gRPC
+link:https://grpc.io/docs/guides/error/#richer-error-model[richer error model]), use
+`GrpcStatusException.of(...)` with a `com.google.rpc.Status` — the `details` (a repeated `Any`) are carried in the
+`grpc-status-details-bin` trailer. This is what the
+link:{source-root}/servicetalk-examples/grpc/errors/src/main/java/io/servicetalk/examples/grpc/errors/ErrorExampleServer.java[Application Errors example]
+demonstrates, returning an `INVALID_ARGUMENT` with a `com.google.rpc.BadRequest` detail.
+
+IMPORTANT: The description and `details` you supply here are **not** redacted — they are intended for the client and
+are transmitted as-is. Treat them as untrusted output: include only information that is safe to expose to the remote
+peer. Anything that is *not* an explicit `GrpcStatusException` is redacted instead, as described next.
+
+[#exceptionRedaction]
+=== Exception detail redaction
+
+To avoid leaking internal information to remote peers, the server does **not** echo arbitrary exception detail in the
+`grpc-message` description. For an otherwise-unmapped exception the client receives an opaque reference of the form
+`internal error (ref: <uuid>)`, and for a serialization failure it receives `Serialization error (ref: <uuid>)`. The
+full exception (including the same reference) is always logged on the server, so operators can correlate a
+client-reported reference with the corresponding server log entry without exposing sensitive information.

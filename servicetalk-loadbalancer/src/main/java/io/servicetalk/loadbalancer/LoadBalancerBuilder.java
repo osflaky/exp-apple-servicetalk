@@ -1,0 +1,168 @@
+/*
+ * Copyright © 2023 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.loadbalancer;
+
+import io.servicetalk.client.api.LoadBalancedConnection;
+import io.servicetalk.client.api.LoadBalancer;
+import io.servicetalk.client.api.LoadBalancerFactory;
+import io.servicetalk.client.api.ServiceDiscovererEvent;
+import io.servicetalk.concurrent.api.Executor;
+import io.servicetalk.concurrent.api.Publisher;
+import io.servicetalk.context.api.ContextMap;
+
+import java.util.function.Predicate;
+import javax.annotation.Nullable;
+
+/**
+ * Builder for {@link LoadBalancerFactory} that creates {@link LoadBalancer} instances based upon the configuration.
+ * <p>
+ * The addresses are provided via the {@link Publisher published}
+ * {@link ServiceDiscovererEvent events} that signal the host's {@link ServiceDiscovererEvent.Status status}.
+ * Instances returned handle {@link ServiceDiscovererEvent.Status#AVAILABLE},
+ * {@link ServiceDiscovererEvent.Status#EXPIRED}, and {@link ServiceDiscovererEvent.Status#UNAVAILABLE} event statuses.
+ * <p>
+ * The created instances have the following behaviour:
+ * <ul>
+ *     <li>Host selection is performed based upon the provided {@link LoadBalancingPolicy}. If no policy is provided
+ *     the default policy is round-robin. While it can be policy specific, most policies will avoid unhealthy
+ *     hosts.</li>
+ *     <li>Host health is determined by the configured {@link OutlierDetectorConfig}. This is inferred from the
+ *     results of requests and from actively probing for connectivity in accordance with the config.</li>
+ *     <li>Connections are created lazily, without any concurrency control on their creation. This can lead to
+ *     over-provisioning connections when dealing with a requests surge.</li>
+ *     <li>Existing connections are reused unless a selector passed to
+ *     {@link LoadBalancer#selectConnection(Predicate, ContextMap)} suggests otherwise. This can lead to situations
+ *     where connections will be used to their maximum capacity (for example in the context of pipelining) before new
+ *     connections are created.</li>
+ *     <li>Closed connections are automatically pruned.</li>
+ *     <li>When {@link Publisher}&lt;{@link ServiceDiscovererEvent}&gt; delivers events with
+ *     {@link ServiceDiscovererEvent#status()} of value {@link ServiceDiscovererEvent.Status#UNAVAILABLE}, connections
+ *     are immediately closed (gracefully) for the associated {@link ServiceDiscovererEvent#address()}. In case of
+ *     {@link ServiceDiscovererEvent.Status#EXPIRED}, already established connections to
+ *     {@link ServiceDiscovererEvent#address()} continue to be used for requests, but no new connections are created.
+ *     In case the address' connections are busy, another host is tried. If all hosts are busy based on the selection
+ *     mechanism of the {@link LoadBalancingPolicy}, selection fails with a
+ *     {@link io.servicetalk.client.api.NoActiveHostException}.</li>
+ * </ul>
+ *
+ * @param <ResolvedAddress> The resolved address type.
+ * @param <C> The type of connection.
+ */
+public interface LoadBalancerBuilder<ResolvedAddress, C extends LoadBalancedConnection> {
+    /**
+     * Set the {@code loadBalancingPolicy} to use with this load balancer.
+     *
+     * @param loadBalancingPolicy the {@code loadBalancingPolicy} to use
+     * @return {@code this}
+     */
+    LoadBalancerBuilder<ResolvedAddress, C> loadBalancingPolicy(
+            LoadBalancingPolicy<ResolvedAddress, C> loadBalancingPolicy);
+
+    /**
+     * Set the {@link LoadBalancerObserverFactory} to use with this load balancer.
+     *
+     * @param loadBalancerObserverFactory the {@link LoadBalancerObserverFactory} to use, or {@code null} to not use an
+     *                                    observer.
+     * @return {code this}
+     */
+    LoadBalancerBuilder<ResolvedAddress, C> loadBalancerObserver(
+            @Nullable LoadBalancerObserverFactory loadBalancerObserverFactory);
+
+    /**
+     * Set the {@link OutlierDetectorConfig} to use with this load balancer.
+     * <p>
+     * The outlier detection system works in conjunction with the load balancing policy to attempt to avoid hosts
+     * that have been determined to be unhealthy or slow. The details of the selection process are determined by the
+     * {@link LoadBalancingPolicy} while the health status is determined by the outlier detection configuration.
+     *
+     * @param outlierDetectorConfig the {@link OutlierDetectorConfig} to use. If not set, the configuration built by
+     *                              {@code new OutlierDetectorConfig.Builder().build()} is used.
+     * @return {code this}
+     * @see #loadBalancingPolicy(LoadBalancingPolicy)
+     * @see OutlierDetectorConfigs for common preconfigured policies
+     */
+    LoadBalancerBuilder<ResolvedAddress, C> outlierDetectorConfig(OutlierDetectorConfig outlierDetectorConfig);
+
+    /**
+     * Set the {@link ConnectionSelectorPolicy} to use with this load balancer.
+     * <p>
+     * Defaults to {@link ConnectionSelectorPolicies#linearSearch()} except as described by
+     * {@link #minConnectionsPerHost(int)}; setting a policy here takes precedence over that.
+     *
+     * @param connectionSelectorPolicy the factory of connection selection strategies to use.
+     * @return {@code this}
+     */
+    LoadBalancerBuilder<ResolvedAddress, C> connectionSelectorPolicy(
+            ConnectionSelectorPolicy<C> connectionSelectorPolicy);
+
+    /**
+     * Set the minimum number of connections an active host should maintain in its pool.
+     * <p>
+     * Setting a minimum number of connections can help reduce the occurrences where connection establishment happens
+     * on the request path, thereby reducing tail latencies, particularly for links which are prone idle-connection
+     * closure. The tradeoff is that it may require tuning and will create more connection overhead overall.
+     * <p>
+     * When this is greater than one and no {@link ConnectionSelectorPolicy} is set, selection defaults to a forced
+     * {@link ConnectionSelectorPolicies#corePool(int, boolean) core pool} of this size. Without it multiplexed
+     * connections would rarely be selected beyond the first, leaving the extra connections idle.
+     * <p>
+     * Note: this is a best-effort setting. There are inherent uncertainties, race conditions, and assumptions that
+     * will cause the number of connections to transiently fall below the specified minimum. Currently, these include:
+     * <ul>
+     *     <li>At startup: implementations do not try to warm never-used pools to prevent unexpected resource usage.
+     *     </li>
+     *     <li>When warming fails: implementations do not attempt to recover from connection establishment failures to
+     *     prevent infinite retry loops.</li>
+     * </ul>
+     *
+     * @param minConnectionsPerHost the minimum number of connections a host should maintain.
+     * @return {@code this}
+     */
+    // FIXME: 0.43 - consider removing default impl from this method
+    default LoadBalancerBuilder<ResolvedAddress, C> minConnectionsPerHost(int minConnectionsPerHost) {
+        throw new UnsupportedOperationException("minConnectionsPerHost is not implemented by " + getClass());
+    }
+
+    /**
+     * Set the maximum number of healthy backends to load balance against using a random-subsetting strategy.
+     *
+     * Note: If a backend within the subset is found to be unhealthy, another endpoint will be added until the unhealthy
+     * backend recovers, after which the subset will return to its original state.
+     *
+     * @param maxUsed the maximum number of healthy backends to use.
+     * @return {@code this}
+     */
+    // FIXME: 0.43 - consider removing default impl from this method
+    default LoadBalancerBuilder<ResolvedAddress, C> maxRandomSubsetSize(int maxUsed) {
+        throw new UnsupportedOperationException("maxRandomSubsetSize is not implemented by " + getClass());
+    }
+
+    /**
+     * Set the background {@link Executor} to use for determining time and scheduling background tasks such
+     * as those associated with outlier detection.
+     *
+     * @param backgroundExecutor {@link Executor} to use as a time source and for scheduling background tasks.
+     * @return {@code this}.
+     */
+    LoadBalancerBuilder<ResolvedAddress, C> backgroundExecutor(Executor backgroundExecutor);
+
+    /**
+     * Builds the {@link LoadBalancerFactory} configured by this builder.
+     *
+     * @return a new instance of {@link LoadBalancerFactory} with settings from this builder.
+     */
+    LoadBalancerFactory<ResolvedAddress, C> build();
+}

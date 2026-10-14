@@ -1,0 +1,82 @@
+#
+# Copyright © 2019, 2021 Apple Inc. and the ServiceTalk project authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+runtime:
+  cache_dir: .out/cache
+site:
+  title: ServiceTalk Docs
+  start_page: servicetalk::index.adoc
+content:
+  edit_url: false
+  # ordered alphabetically by component name (as specified in components' antora.yml)
+  # to reflect ordering of `site.components` used in .hbs
+  sources:
+    - url: ../../
+      branches: HEAD
+      start_path: docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-examples/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-http-api/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-http-router-jersey/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-http-security-jersey/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-concurrent-api/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-data-jackson-jersey/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-grpc-api/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-loadbalancer/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-client-api/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-traffic-resilience-http/docs
+    - url: ../../
+      branches: HEAD
+      start_path: servicetalk-opentelemetry-http/docs
+asciidoc:
+  attributes:
+    experimental: ''
+    idprefix: ''
+    idseparator: '-'
+    sectlinks: ''
+    linkattrs: ''
+ui:
+  bundle:
+    # Downloaded from
+    # https://gitlab.com/antora/antora-ui-default/-/jobs/240724388/artifacts/raw/build/ui-bundle.zip?inline=false
+    # which is a build of commit 4330e8ce
+    # (https://gitlab.com/antora/antora-ui-default/commit/4330e8ce78c3180c13147411ba3554e65816e74b)
+    # since the next commit refactors the structure of the UI.
+    url: ui-bundle.zip
+    snapshot: true
+  supplemental_files: ./supplemental-ui
+output:
+  dir: .out/local
+  clean: true

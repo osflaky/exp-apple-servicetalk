@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright © 2019 Apple Inc. and the ServiceTalk project authors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<FindBugsFilter>
+  <Match>
+    <Source name="~.*Test\.java"/>
+    <Or>
+      <!-- Fields are usually initialized in @BeforeClass/@Before methods instead of constructors for tests -->
+      <Bug pattern="NP_NONNULL_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR"/>
+      <!-- Not interested in returned values -->
+      <Bug pattern="RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT"/>
+      <!-- Tests methods can throw any exception type -->
+      <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION"/>
+      <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+      <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_THROWABLE"/>
+      <!-- Other patterns we would like to ignore for tests -->
+      <Bug pattern="EI_EXPOSE_REP"/>
+    </Or>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.TestServiceStreaming"/>
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.ClientClosureRaceTest"/>
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/>
+  </Match>
+  <!-- false positive in Java 11, see https://github.com/spotbugs/spotbugs/issues/756 -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.AbstractHttpServiceAsyncContextTest"/>
+    <Or>
+      <Method name="connectionAcceptorContextDoesNotLeak" />
+      <Method name="contextPreservedOverFilterBoundaries" />
+    </Or>
+    <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+  </Match>
+  <!-- false positive in Java 11, see https://github.com/spotbugs/spotbugs/issues/756 -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.StreamObserverTest"/>
+    <Method name="maxActiveStreamsViolationError" />
+    <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+  </Match>
+  <!-- false positive in Java 11, see https://github.com/spotbugs/spotbugs/issues/756 -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ConcurrencyControllerTest"/>
+    <Method name="noMaxActiveStreamsViolatedError" />
+    <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+  </Match>
+  <!-- false positive in Java 11, see https://github.com/spotbugs/spotbugs/issues/756 -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.ExpectContinueTest"/>
+    <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.InvokingThreadsRecorder"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <!-- Test intentionally returns null to verify the null-check -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.HttpClientResolvesOnNewConnectionTest$FailureCase$1"/>
+    <Bug pattern="NP_NONNULL_RETURN_VIOLATION"/>
+  </Match>
+
+  <!-- Test setup methods with controlled single-threaded access -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.GracefulConnectionClosureHandlingTest"/>
+    <Field name="initiateClosureFromClient"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2PriorKnowledgeFeatureParityTest"/>
+    <Field name="h2PriorKnowledge"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+</FindBugsFilter>

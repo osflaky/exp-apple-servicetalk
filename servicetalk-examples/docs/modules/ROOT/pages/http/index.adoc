@@ -1,0 +1,431 @@
+// Configure {source-root} values based on how this document is rendered: on GitHub or not
+ifdef::env-github[]
+:source-root:
+endif::[]
+ifndef::env-github[]
+ifndef::source-root[:source-root: https://github.com/apple/servicetalk/blob/{page-origin-refname}]
+endif::[]
+
+= HTTP Examples
+
+The link:{source-root}/servicetalk-examples/http[`http`]
+folder contains examples for the https://datatracker.ietf.org/doc/html/rfc7231[HTTP] protocol.
+
+[#HelloWorld]
+== Hello World
+
+An obligatory "Hello World" example for HTTP.
+
+=== Asynchronous + Aggregated
+
+This example demonstrates asynchronous request processing where the payload body is aggregated into a single object
+instead of a stream.
+
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/HelloWorldServer.java[HelloWorldServer] - a server that demonstrates the asynchronous API and
+responds with a simple `Hello World!` response body as a `text/plain`.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/HelloWorldClient.java[HelloWorldClient] - a client that sends a `GET` request to the
+link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/HelloWorldServer.java[server] and receives the response as a single content.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/HelloWorldUrlClient.java[HelloWorldUrlClient] - a client that sends a `GET` request to the
+specified URL in absolute-form and receives the response as a single content.
+
+=== Asynchronous + Streaming
+
+This example demonstrates asynchronous request processing where the payload body is a stream.
+
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/streaming/HelloWorldStreamingServer.java[HelloWorldStreamingServer] - a server that responds with a
+stream of `text/plain` payload body for every request.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/streaming/HelloWorldStreamingClient.java[HelloWorldStreamingClient] - a client that sends a `GET`
+request to the link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/streaming/HelloWorldStreamingServer.java[server] and receives the response payload
+body as a stream of buffers.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/async/streaming/HelloWorldStreamingUrlClient.java[HelloWorldStreamingUrlClient] - a client that sends a
+`GET` request to the specified URL in absolute-form and receives the response payload body as a stream of buffers.
+
+[#blocking-aggregated]
+=== Blocking + Aggregated
+
+This example demonstrates blocking request processing where the payload body is aggregated into a single object. The
+APIs will block if content is requested but there is no content available.
+
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/BlockingHelloWorldServer.java[BlockingHelloWorldServer] - a server that demonstrates the
+blocking API and responds with a simple `Hello World!` response body as a `text/plain`.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/BlockingHelloWorldClient.java[BlockingHelloWorldClient] - a client that sends a `GET` request to
+the link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/BlockingHelloWorldServer.java[server] and receives the response payload body as one aggregated
+object.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/BlockingHelloWorldUrlClient.java[BlockingHelloWorldUrlClient] - a client that sends a `GET`
+request to the specified URL in absolute-form and receives the response payload body as one aggregated object.
+
+=== Blocking + Streaming
+
+This example demonstrates blocking request processing where the payload body is a blocking iterable stream.
+
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/streaming/BlockingHelloWorldStreamingServer.java[BlockingHelloWorldStreamingServer] - a server
+that responds with an iterable stream of `text/plain` payload body for every request.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/streaming/BlockingHelloWorldStreamingClient.java[BlockingHelloWorldStreamingClient] - a client
+that sends a `GET` request to the link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/streaming/BlockingHelloWorldStreamingServer.java[server] and
+receives the response payload body as a blocking iterable stream of buffers.
+* link:{source-root}/servicetalk-examples/http/helloworld/src/main/java/io/servicetalk/examples/http/helloworld/blocking/streaming/BlockingHelloWorldStreamingUrlClient.java[BlockingHelloWorldStreamingUrlClient] - a
+client that sends a `GET` request to the specified URL in absolute-form and receives the response payload body as a
+blocking iterable stream of buffers.
+
+[#Compression]
+== Compression
+
+Extends the async "Hello World" example to demonstrate content encoding compression filters. No separate example is
+needed for the other API variants as the usage of content encoding filters is the same for all API styles.
+
+* link:{source-root}/servicetalk-examples/http/compression/src/main/java/io/servicetalk/examples/http/compression/CompressionFilterExampleServer.java[CompressionFilterExampleServer] - a server that demonstrates
+the asynchronous API and responds with a simple `Hello World!` response body, optionally customized for a specific name for `POST` requests, as a `text/plain`.
+* link:{source-root}/servicetalk-examples/http/compression/src/main/java/io/servicetalk/examples/http/compression/CompressionFilterExampleClient.java[CompressionFilterExampleClient.java] - a single-address client that
+sends a `POST` request containing a name to the link:{source-root}/servicetalk-examples/http/compression/src/main/java/io/servicetalk/examples/http/compression/CompressionFilterExampleServer.java[server] and
+receives a response greeting the posted name as a single content.
+* link:{source-root}/servicetalk-examples/http/compression/src/main/java/io/servicetalk/examples/http/compression/CompressionFilterExampleUrlClient.java[CompressionFilterExampleUrlClient.java] - a multi-address client that
+sends a `POST` request containing a name to the link:{source-root}/servicetalk-examples/http/compression/src/main/java/io/servicetalk/examples/http/compression/CompressionFilterExampleServer.java[server] and
+receives a response greeting the posted name as a single content.
+
+[#Debugging]
+== Debugging
+
+Extends the async "Hello World" example to demonstrate some useful features available
+ for debugging ServiceTalk applications. You should read and understand the async <<HelloWorld,"Hello World" example>>
+ first to understand the additions this example adds. No separate example is needed
+ for the other API variants as the usage of the debugging features are the same for all API
+ styles.
+
+* link:{source-root}/servicetalk-examples/http/debugging/src/main/java/io/servicetalk/examples/http/debugging/DebuggingExampleServer.java[DebuggingExampleServer] - the async `Hello World!`
+ server enhanced with debugging capabilities.
+* link:{source-root}/servicetalk-examples/http/debugging/src/main/java/io/servicetalk/examples/http/debugging/DebuggingExampleClient.java[DebuggingExampleClient.java] - the async `Hello World!` single-address client enhanced with debugging capabilities.
+* link:{source-root}/servicetalk-examples/http/debugging/src/main/java/io/servicetalk/examples/http/debugging/DebuggingExampleUrlClient.java[DebuggingExampleUrlClient.java] - the async `Hello World!` multi-address client enhanced with debugging capabilities.
+
+[#Timeout]
+== Timeout
+
+Extends the async "Hello World" example to demonstrate the use of timeout filters and operators. You should read and
+ understand the async <<HelloWorld,"Hello World" example>> first to understand the additions this example adds. No separate example is
+ needed for the other API variants as the usage of the timeout features are the same for all API styles.
+
+* link:{source-root}/servicetalk-examples/http/timeout/src/main/java/io/servicetalk/examples/http/timeout/TimeoutServer.java[TimeoutServer] - the async `Hello World!` server client enhanced to use timeout capabilities.
+* link:{source-root}/servicetalk-examples/http/timeout/src/main/java/io/servicetalk/examples/http/timeout/TimeoutClient.java[TimeoutClient.java] - the async `Hello World!` single-address client enhanced to use timeout capabilities.
+* link:{source-root}/servicetalk-examples/http/timeout/src/main/java/io/servicetalk/examples/http/timeout/TimeoutUrlClient.java[TimeoutUrlClient.java] - the async `Hello World!` multi-address client enhanced to use timeout capabilities.
+
+[#SerializationJson]
+== Serialization: JSON
+
+An example similar to "Hello World" examples, which demonstrates
+link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/async[asynchronous-aggregated],
+link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/async/streaming[asynchronous-streaming],
+link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/blocking[blocking-aggregated], and
+link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/blocking/streaming[blocking-streaming]
+client and server with JSON serialization of simple pojo classes.
+
+Client sends a `POST` request with a JSON payload link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/CreatePojoRequest.java[CreatePojoRequest] and expects a response
+with `Content-Type: application/json` and link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/PojoResponse.java[PojoResponse] as a payload.
+
+All serializers and deserializers defined in
+link:{source-root}/servicetalk-examples/http/serialization/json/src/main/java/io/servicetalk/examples/http/serialization/json/SerializerUtils.java[SerializerUtils].
+
+[#SerializationProtobuf]
+== Serialization: Protobuf
+
+An example similar to "Hello World" examples, which demonstrates
+link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/java/io/servicetalk/examples/http/serialization/protobuf/async[asynchronous-aggregated],
+link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/java/io/servicetalk/examples/http/serialization/protobuf/async/streaming[asynchronous-streaming],
+link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/java/io/servicetalk/examples/http/serialization/protobuf/blocking[blocking-aggregated], and
+link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/java/io/servicetalk/examples/http/serialization/protobuf/blocking/streaming[blocking-streaming]
+client and server with Protobuf serialization of simple proto objects.
+
+Client sends a `POST` request with a Protobuf payload `RequestMessage` and expects a response with
+`Content-Type: application/protobuf` and `ResponseMessage` as a payload
+(link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/proto/message.proto[message.proto]).
+All serializers and deserializers defined in
+link:{source-root}/servicetalk-examples/http/serialization/protobuf/src/main/java/io/servicetalk/examples/http/serialization/protobuf/SerializerUtils.java[SerializerUtils].
+
+[#SerializationBytes]
+== Serialization: Bytes
+
+An example similar to "Hello World" examples, which demonstrates
+link:{source-root}/servicetalk-examples/http/serialization/bytes/src/main/java/io/servicetalk/examples/http/serialization/bytes/blocking[blocking-aggregated]
+client and server with `byte[]` serialization.
+
+Client sends a `GET` request and expects a response that can be deserialized as `byte[]`.
+All serializers and deserializers defined in
+link:{source-root}/servicetalk-examples/http/serialization/bytes/src/main/java/io/servicetalk/examples/http/serialization/bytes/SerializerUtils.java[SerializerUtils].
+
+[#JAXRS]
+== JAX-RS
+
+ServiceTalk provides a JAX-RS implementation that can plugin to ServiceTalk APIs.
+This example demonstrates how to use these APIs, and how different API variations (e.g. asynchronous/blocking and
+aggregated/streaming) are exposed.
+
+To use ServiceTalk with Jersey 3.X, replace the following dependencies in the sample:
+
+* `servicetalk-data-jackson-jersey` -> `servicetalk-data-jackson-jersey3-jakarta9` (3.0.X) or `servicetalk-data-jackson-jersey3-jakarta10` (3.1.X)
+* `servicetalk-data-protobuf-jersey` -> `servicetalk-data-protobuf-jersey3-jakarta9` (3.0.X) or `servicetalk-data-protobuf-jersey3-jakarta10` (3.1.X)
+* `servicetalk-http-router-jersey` -> `servicetalk-http-router-jersey3-jakarta9` (3.0.X) or `servicetalk-http-router-jersey3-jakarta10` (3.1.X)
+
+and change `jerseyVersion` to `jersey3VersionEE9` (3.0.X) or `jersey3VersionEE10` (3.1.X)
+
+=== Hello world
+
+A simple "Hello World" example built using JAX-RS.
+
+* link:{source-root}/servicetalk-examples/http/jaxrs/src/main/java/io/servicetalk/examples/http/jaxrs/HelloWorldJaxRsServer.java[HelloWorldJaxRsServer] - a JAX-RS based hello world server that demonstrates how to
+write blocking as well as asynchronous resource methods.
+* link:{source-root}/servicetalk-examples/http/jaxrs/src/main/java/io/servicetalk/examples/http/jaxrs/HelloWorldJaxRsResource.java[HelloWorldJaxRsResource] - a JAX-RS resource having different methods for
+blocking and asynchronous interactions.
+
+This example does not have a client yet but one can use curl to send requests like:
+
+----
+curl http://localhost:8080/greetings/hello
+----
+
+More examples of how to use the resource can be found in the
+link:{source-root}/servicetalk-examples/http/jaxrs/src/main/java/io/servicetalk/examples/http/jaxrs/HelloWorldJaxRsResource.java[HelloWorldJaxRsResource] javadocs.
+
+[#MetaData]
+== MetaData
+
+This example demonstrates some basic functionality of the
+link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/HttpMetaData.java[HttpMetaData] classes:
+
+- Setting and getting response status.
+- Setting and getting query parameters.
+- Setting, checking, and getting headers.
+- Printing headers without redaction/filtering.
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/metadata/src/main/java/io/servicetalk/examples/http/metadata/MetaDataDemoServer.java[MetaDataDemoServer] - A server that provides greetings in various languages.
+- link:{source-root}/servicetalk-examples/http/metadata/src/main/java/io/servicetalk/examples/http/metadata/MetaDataDemoClient.java[MetaDataDemoClient] - A client that requests greetings in various languages.
+
+NOTE: This example uses the link:#blocking-aggregated[blocking + aggregated] API, as the metadata API is the same
+across all the HTTP APIs.
+
+[#Mutual-TLS]
+== Mutual TLS
+
+This example demonstrates how client and server can be configured to do mutual authentication via TLS.
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/mutual-tls/src/main/java/io/servicetalk/examples/http/mutualtls/HttpServerMutualTLS.java[HttpServerMutualTLS] - A server that sets the trust manager and key manager, and requires client authentication.
+- link:{source-root}/servicetalk-examples/http/mutual-tls/src/main/java/io/servicetalk/examples/http/mutualtls/HttpClientMutualTLS.java[HttpClientMutualTLS] - A single-address client that sets the trust manager and key manager.
+- link:{source-root}/servicetalk-examples/http/mutual-tls/src/main/java/io/servicetalk/examples/http/mutualtls/HttpUrlClientMutualTLS.java[HttpUrlClientMutualTLS] - A multi-address client that sets the trust manager and key manager when needed.
+
+NOTE: This example uses the link:#blocking-aggregated[blocking + aggregated] API, as the TLS/SSL configuration API is
+the same across all the HTTP APIs.
+
+[#HTTPS-Proxy]
+== HTTPS Proxy
+
+This example demonstrates how a client can reach an origin server through an HTTP `CONNECT` proxy that itself requires
+mutual TLS. Two independent TLS configurations are involved: the outer handshake authenticates the client to the proxy,
+and the inner handshake performs standard server-auth TLS with the origin, tunneled over the established `CONNECT`.
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/https-proxy/src/main/java/io/servicetalk/examples/http/httpsproxy/HttpsProxyServer.java[HttpsProxyServer] - Starts an origin HTTPS server and a mutual-TLS `CONNECT` proxy in front of it.
+- link:{source-root}/servicetalk-examples/http/https-proxy/src/main/java/io/servicetalk/examples/http/httpsproxy/HttpsProxyClient.java[HttpsProxyClient] - A client that configures mutual TLS to the proxy and server-auth TLS to the origin.
+- link:{source-root}/servicetalk-examples/http/https-proxy/src/main/java/io/servicetalk/examples/http/httpsproxy/HandshakeLoggingTransportObserver.java[HandshakeLoggingTransportObserver] - A `TransportObserver` that logs both the proxy and origin TLS handshakes.
+
+NOTE: This example uses the link:#blocking-aggregated[blocking + aggregated] API, as the TLS/SSL configuration API is
+the same across all the HTTP APIs.
+
+[#Observer]
+== Observer
+This example demonstrates the following:
+- Use of
+link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/HttpLifecycleObserver.java[HttpLifecycleObserver] to log a summary of each request/response.
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/observer/src/main/java/io/servicetalk/examples/http/observer/LifecycleObserverServer.java[LifecycleObserverServer] - A server that installs a
+link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/HttpLifecycleObserver.java[HttpLifecycleObserver]
+on the server builder.
+- link:{source-root}/servicetalk-examples/http/observer/src/main/java/io/servicetalk/examples/http/observer/LifecycleObserverClient.java[LifecycleObserverClient] - A single-address client that installs a
+link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/HttpLifecycleObserver.java[HttpLifecycleObserver]
+on via a client filter on the client builder.
+- link:{source-root}/servicetalk-examples/http/observer/src/main/java/io/servicetalk/examples/http/observer/LifecycleObserverUrlClient.java[LifecycleObserverUrlClient] - A multi-address client that installs a
+link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/HttpLifecycleObserver.java[HttpLifecycleObserver]
+on via a client filter on the client builder.
+
+[#LoadBalancer]
+== LoadBalancer
+This example demonstrates how to use and configure link:{source-root}/servicetalk-loadbalancer/src/main/java/io/servicetalk/loadbalancer/LoadBalancers.java[LoadBalancers]:
+
+- by using link:{source-root}/servicetalk-loadbalancer/src/main/java/io/servicetalk/loadbalancer/LoadBalancerBuilder.java[LoadBalancerBuilder] to customize its setting:
+  * configuring a different link:{source-root}/servicetalk-loadbalancer/src/main/java/io/servicetalk/loadbalancer/LoadBalancingPolicy.java[LoadBalancingPolicy]
+  * configuring xDS failure detection using link:{source-root}/servicetalk-loadbalancer/src/main/java/io/servicetalk/loadbalancer/OutlierDetectorConfig.java[OutlierDetectorConfig]
+- by using link:{source-root}/servicetalk-http-api/src/main/java/io/servicetalk/http/api/DefaultHttpLoadBalancerFactory.java[DefaultHttpLoadBalancerFactory] to adapt a LoadBalancer to HTTP and configure it via client builder
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/loadbalancer/src/main/java/io/servicetalk/examples/http/loadbalancer/CustomLoadBalancerClient.java[CustomLoadBalancerClient] - A client that configures custom settings for its LoadBalancer.
+- link:{source-root}/servicetalk-examples/http/loadbalancer/src/main/java/io/servicetalk/examples/http/loadbalancer/HelloWorldServer.java[HelloWorldServer] - A simple server implementation.
+
+[#OpenTracing]
+== OpenTracing
+
+This example demonstrates the following:
+
+- automatically generate and propagate distributed tracing metadata
+- make span IDs available in log statements via MDC
+- publish span IDs via Zipkin's HTTP API and to a local console logger
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/opentracing/src/main/java/io/servicetalk/examples/http/opentracing/OpenTracingServer.java[OpenTracingServer] - A server that generates/propagates span IDs, makes spans available in logs via MDC, publishes spans via Zipkin's HTTP API.
+- link:{source-root}/servicetalk-examples/http/opentracing/src/main/java/io/servicetalk/examples/http/opentracing/OpenTracingClient.java[OpenTracingClient] - A client that generates/propagates span IDs, makes spans available in logs via MDC, publishes spans via local console logger.
+- link:{source-root}/servicetalk-examples/http/opentracing/src/main/java/io/servicetalk/examples/http/opentracing/ZipkinServerSimulator.java[ZipkinServerSimulator] - A server that simulates/mocks a Zipkin server, and logs requests to the console.
+- link:{source-root}/servicetalk-examples/http/opentracing/src/main/java/io/servicetalk/examples/http/opentracing/BraveTracingServer.java[BraveTracingServer] - A server that uses link:https://github.com/openzipkin-contrib/brave-opentracing[Brave OpenTracing] implementation.
+
+[#OpenTelemetryTracing]
+== OpenTelemetry Tracing
+
+This example demonstrates the following:
+
+- automatically generate and propagate distributed tracing metadata using OpenTelemetry
+- configure OpenTelemetry SDK with logging span exporter for local development
+- use of ServiceTalk HTTP filters for OpenTelemetry tracing
+- proper xref:{page-version}@servicetalk-concurrent-api::async-context.adoc[async context propagation] for span correlation
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/http/opentelemetry-tracing/src/main/java/io/servicetalk/examples/http/opentelemetry/tracing/OpenTelemetryTracingServer.java[OpenTelemetryTracingServer] - A server that demonstrates OpenTelemetry tracing configuration and automatic span generation for HTTP requests.
+- link:{source-root}/servicetalk-examples/http/opentelemetry-tracing/src/main/java/io/servicetalk/examples/http/opentelemetry/tracing/OpenTelemetryTracingClient.java[OpenTelemetryTracingClient] - A client that demonstrates OpenTelemetry tracing configuration and automatic span generation for HTTP requests with context propagation.
+
+[#Redirects]
+== Redirects
+
+Extends the async "Hello World" example to demonstrate different ways that users can support redirects in ServiceTalk
+applications. You should read and understand the <<HelloWorld,"Hello World" example>> first to understand the
+additions this example adds. No separate example is needed for the other API variants as the usage of the redirect
+features are the same for all API styles.
+
+* link:{source-root}/servicetalk-examples/http/redirects/src/main/java/io/servicetalk/examples/http/redirects/RedirectingServer.java[RedirectingServer] -
+Starts two servers, one of them (HTTP) redirects to another (HTTPS).
+* link:{source-root}/servicetalk-examples/http/redirects/src/main/java/io/servicetalk/examples/http/redirects/SingleAddressRedirectClient.java[SingleAddressRedirectClient.java] -
+Async `Hello World` example that demonstrates how relative redirects can be handled automatically by a single-address client.
+* link:{source-root}/servicetalk-examples/http/redirects/src/main/java/io/servicetalk/examples/http/redirects/MultiAddressUrlRedirectClient.java[MultiAddressUrlRedirectClient.java] -
+Async `Hello World` example that demonstrates how redirects can be handled automatically by a multi-address client.
+It demonstrates how users can preserve headers and payload body of the original request while redirecting to non-relative locations.
+* link:{source-root}/servicetalk-examples/http/redirects/src/main/java/io/servicetalk/examples/http/redirects/ManualRedirectClient.java[ManualRedirectClient.java] -
+Async `Hello World` example that demonstrates how redirects can be handled manually between multiple single-address clients.
+
+[#Retries]
+== Retries
+
+Extends the async "Hello World" example to demonstrate basic cliest request retry functionality. You should read and
+understand the async <<HelloWorld,"Hello World" example>> first to understand the additions this example adds. No
+separate example is needed for the other API variants as the usage of the debugging features are the same for all API
+styles.
+
+* link:{source-root}/servicetalk-examples/http/retry/src/main/java/io/servicetalk/examples/http/retry/RetryServer.java[RetryServer] -
+A special "flaky" `Hello World` server that alternates "509" Gateway Timeout and "200" Success responses for client
+requests to demonstrate client retry.
+* link:{source-root}/servicetalk-examples/http/retry/src/main/java/io/servicetalk/examples/http/retry/RetryClient.java[RetryClient.java] -
+Async `Hello World` example that demonstrates how retry can be requested for a single-address client.
+* link:{source-root}/servicetalk-examples/http/retry/src/main/java/io/servicetalk/examples/http/retry/RetryUrlClient.java[RetryUrlClient.java] -
+Async `Hello World` example that demonstrates how retry can be requested for a multi-address client.
+
+[#TrafficResiliency]
+== Traffic Resiliency
+
+Some examples that use the traffic resiliency features.
+
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/GradientObservabilityExample.java[GradientObservabilityExample] -
+An example that demonstrates using the observer pattern to instrument the gradient capacity limiter.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceClientBreakersExample.java[TrafficResilienceClientBreakersExample] -
+A client that uses request metadata to select the correct circuit breaker.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceClientPeerRejectionsExample.java[TrafficResilienceClientPeerRejectionsExample] -
+A client which configures what constitutes a rejection based on response status code.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceClientPeerRejectionsPassthroughExample.java[TrafficResilienceClientPeerRejectionsPassthroughExample] -
+A client which configures which responses will affect the capacity limiter but still pass through to the underlying
+client.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceClientPeerRejectionsRetryExample.java[TrafficResilienceClientPeerRejectionsRetryExample] -
+A client which configures the resilience filters to signal an appropriate delay to the retry filter.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerClassificationExample.java[TrafficResilienceServerClassificationExample] -
+A server that specifies the importance of requests based on the request metadata.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerExample.java[TrafficResilienceServerExample] -
+A server that uses the dynamic gradient capacity limiter.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerPartitionExample.java[TrafficResilienceServerPartitionExample] -
+A server that uses two separate capacity limiters, selected based on request metadata.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerQuotasExample.java[TrafficResilienceServerQuotasExample] -
+A server that uses fixed capacity limiters based on the customer identity, as determined by the request metadata.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerStopAcceptingExample.java[TrafficResilienceServerStopAcceptingExample] -
+A server that stops accepting new connections when it reaches its rejection threshold.
+- link:{source-root}/servicetalk-examples/http/traffic-resilience/src/main/java/io/servicetalk/examples/http/traffic/resilience/TrafficResilienceServerTerminalsExample.java[TrafficResilienceServerTerminalsExample] -
+An example that demonstrates custom handling of tickets on error conditions.
+
+[#HTTP2]
+== HTTP/2
+
+These examples demonstrate how users can configure link:https://datatracker.ietf.org/doc/html/rfc7540[HTTP/2] transport in
+ServiceTalk.
+
+=== HTTP/2 with Prior-Knowledge
+
+This example demonstrates how to configure using
+link:https://datatracker.ietf.org/doc/html/rfc7540#section-3.4[HTTP/2 transport with Prior-Knowledge] for HTTP clients and servers:
+
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/priorknowledge/Http2PriorKnowledgeServer.java[Http2PriorKnowledgeServer] -
+A server that uses HTTP/2 with Prior Knowledge.
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/priorknowledge/Http2PriorKnowledgeClient.java[Http2PriorKnowledgeClient] -
+A single-address client that uses HTTP/2 with Prior Knowledge.
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/priorknowledge/Http2PriorKnowledgeUrlClient.java[Http2PriorKnowledgeUrlClient] -
+A multi-address client that conditionally uses HTTP/2 with Prior Knowledge.
+
+=== HTTP/2 via ALPN for secure connections
+
+For secure TLS connections link:https://datatracker.ietf.org/doc/html/rfc7301[ALPN extension] could be used to negotiate the
+communication protocol:
+
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/alpn/HttpServerWithAlpn.java[HttpServerWithAlpn] -
+A server that negotiates HTTP/2 or HTTP/1.1 using ALPN extension for TLS connections.
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/alpn/HttpClientWithAlpn.java[HttpClientWithAlpn] -
+A single-address client that negotiates HTTP/2 or HTTP/1.1 using ALPN extension for TLS connections.
+- link:{source-root}/servicetalk-examples/http/http2/src/main/java/io/servicetalk/examples/http/http2/alpn/HttpUrlClientWithAlpn.java[HttpUrlClientWithAlpn] -
+A multi-address client that conditionally negotiates HTTP/2 or HTTP/1.1 using ALPN extension for TLS connections.
+
+If HTTP/1.x protocol is configured ServiceTalk always fallbacks to it if the peer does not support ALPN extension.
+
+IMPORTANT: Your runtime must support ALPN extension for TLS. The recommended way is to use OpenSSL provider and add
+link:https://netty.io/wiki/forked-tomcat-native.html#artifacts[netty-tcnative] artifact to the classpath. If OpenSSL is
+not available, make sure your JVM version supports ALPN or use
+link:https://github.com/jetty-project/jetty-alpn[another provider] that supports it.
+
+NOTE: These examples use the link:#blocking-aggregated[blocking + aggregated] API for demonstration purposes, as the
+builder API is the same across all the HTTP APIs.
+
+== Service Composition
+
+An advanced example which demonstrates a composition of various ServiceTalks services in one application.
+For more information see xref:http/service-composition.adoc[Service Composition].
+
+[#uds]
+== Unix Domain Sockets (UDS)
+
+This example demonstrates how client and server can use unix domain sockets. See
+the link:{source-root}/servicetalk-examples/http/uds[uds example code] for more details.
+
+NOTE: This example uses the link:#blocking-aggregated[blocking + aggregated] API, as the UDS configuration API is the
+same across all the HTTP APIs.
+
+[#Files]
+== Files
+
+This example demonstrates asynchronous request processing where the response payload body is streamed from a file.
+
+* link:{source-root}/servicetalk-examples/http/files/src/main/java/io/servicetalk/examples/http/files/FilesServer.java[FilesServer] - a server whose response body is streamed from a file.
+* link:{source-root}/servicetalk-examples/http/files/src/main/java/io/servicetalk/examples/http/files/FilesClient.java[FilesClient] - a client that requests and prints response contents.
+
+[#VirtualThreads]
+== Virtual Threads
+
+This example runs request handling on virtual threads by supplying an offloading `Executor` backed by the JDK's
+virtual-thread-per-task executor, while leaving the `IoExecutor` on platform threads. See the
+xref:{page-version}@servicetalk::virtual-threads.adoc[Virtual Threads guide] for when this is worthwhile and the
+trade-offs involved. Requires JDK 25 or later.
+
+* link:{source-root}/servicetalk-examples/http/virtual-threads/src/main/java/io/servicetalk/examples/http/virtualthreads/VirtualThreadServer.java[VirtualThreadServer] - a blocking "Hello World" server whose request handling runs on virtual threads.

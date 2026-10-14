@@ -1,0 +1,233 @@
+// Configure {source-root} values based on how this document is rendered: on GitHub or not
+ifdef::env-github[]
+:source-root:
+endif::[]
+ifndef::env-github[]
+ifndef::source-root[:source-root: https://github.com/apple/servicetalk/blob/{page-origin-refname}]
+endif::[]
+
+= ServiceTalks default Load Balancer
+
+== What is the default Load Balancer?
+
+The default load balancer is a refactor and generalization of the ServiceTalk Round-Robin load balancer that is intended
+to provide a more flexible foundation for building load balancers. It serves as the basis for new features that were not
+possible with RoundRobinLoadBalancer including host scoring, additional selection algorithms, and outlier detectors.
+
+=== Relationship Between the LoadBalancer and Connections
+
+The load balancer is structured as a series of hosts and those hosts can have many connections. The number of
+connections to each host is driven by the number of connections  required to satisfy the request load. Usage of the
+HTTP/2 protocol will dramatically shrink the necessary number of connections to each backend, often to 1, and is
+strongly encouraged.
+
+////
+[source,mermaid]
+----
+flowchart LR
+    Dispatcher --> |select connection| LoadBalancer
+    ServiceDiscovery --> |update host set| LoadBalancer
+    LoadBalancer --> H0[Host:addr-0]
+    LoadBalancer --> H1[Host:addr-1]
+    LoadBalancer --> H2[Host:addr-2]
+    H0 --> C00[Connection0:addr-0]
+    H0 --> C01[ConnectionN:addr-0]
+    H1 --> C10[Connection0:addr-1]
+    H1 --> C11[ConnectionN:addr-1]
+    H2 --> C20[Connection0:addr-2]
+    H2 --> C21[ConnectionN:addr-2]
+
+----
+////
+image::flowdiagram.png[Abstraction Relationships, align="center"]
+
+=== More Host Selection Algorithms
+
+A primary goal of the default load balancer was to open the door to alternative host selection algorithms. The
+round-robin load balancer is limited to round-robin while the default load balancer comes out of the box with multiple
+choices and the flexibility to add more if necessary.
+
+==== Power of two Choices (P2C)
+
+Power of two choices (https://doi.org/10.1109/71.963420[P2C]) is an algorithm that allows load balancers to
+bias traffic toward hosts with a better 'score' while retaining the fairness of random selection. This algorithm is
+a random selection process but with a twist: it selects two hosts at random and from those two pick the 'best' where
+best is defined by a scoring system. ServiceTalk uses an Exponentially Weighted Moving Average
+(http://www.eckner.com/papers/Algorithms%20for%20Unevenly%20Spaced%20Time%20Series.pdf[EWMA]) scoring system by default.
+EWMA takes into account the recent latency, failures, and outstanding request load of the destination host when
+computing a hosts score.
+
+The P2C selection algorithm has a number of favorable properties
+
+* having significantly more fair request distribution between hosts than simple random
+* biasing away from low performing hosts
+* avoiding the order coalescing problems associated with round-robin
+
+////
+[source,mermaid]
+----
+stateDiagram-v2
+    state "pick 2 hosts" as p2c
+    state "evaluate hosts health" as evalhealth
+    state "pick by score" as pickscore
+    [*] --> p2c
+    p2c --> evalhealth
+    evalhealth --> p2c: neither host healthy
+    evalhealth --> [*]: one host healthy
+    evalhealth --> pickscore: both healthy
+    pickscore --> [*]: select best scored host
+----
+////
+image::p2cdiagram.png[P2C Endpoint Selection, 300, align="center"]
+
+==== Round-Robin
+
+While round-robin is a very common algorithm that is easy to understand. From a local perspective it is an extremely
+fair algorithm assuming each request is essentially the same cost. It's downsides include unwanted correlation effects
+due to its sequential ordering and inability to modulate traffic to hosts other than in the case of outright host
+failure.
+
+////
+[source,mermaid]
+----
+stateDiagram-v2
+    state "advance index (i)" as select_index
+    state "evaluate health" as eval_health
+    [*] --> select_index
+    select_index --> eval_health: select host(i)
+    eval_health --> select_index: host unhealthy
+    eval_health --> [*]: host healthy
+----
+////
+image::roundrobindiagram.png[Round, 300, align="center"]
+
+== xDS Outlier Detection
+
+=== What is xDS
+
+In addition to being more modular default load balancer is being introduced with resiliency features found in the xDS
+specification that was pioneered by the Envoy project and is being https://github.com/cncf/xds[advanced by the CNCF].
+xDS defines a control plane that allows for the distributed configuration of key components like certificates,
+load balancers, etc. In this documentation we will focus on the elements that are relevant to load balancing, referred
+to as Cluster Discovery Service, or CDS.
+
+=== Failure Detection Algorithms
+
+The default load balancer was designed to mitigate failures at both layer 4 (connection layer) and layer 7 (request
+layer). It supports the following xDS compatible outlier detectors:
+
+* Consecutive failures: ejects hosts that exceed the configured consecutive failures.
+* Success rate failure detection: statistical outlier ejection based on success rate.
+* Failure percentage outlier detection: ejects hosts with a failure rate that exceeds a fixed threshold.
+
+In addition to the xDS defined outlier detectors default load balancer continues to support consecutive connection
+failure detection with active probing: when a host is found to be unreachable it is marked as unhealthy until a new
+connection can be established to the host. This probing is done outside the request path.
+
+All of the xDS outlier detectors are bounded by `maxEjectionPercentage`: an ejection only happens if it leaves the
+ejected share of hosts at or below that percentage. Small host sets therefore see no xDS ejection at all, which keeps
+a load balancer over a single endpoint from failing closed. Set `alwaysEjectOneHost` to permit one ejection
+regardless of the percentage.
+
+=== Connection Selection with Outlier Detectors
+
+Connection acquisition failures, request failures, and response latency are used to optimize traffic flows to avoid
+unhealthy hosts and _bias_ traffic to hosts with better response times in order to adjust to the observed capacity of
+backends. The relationship is shown in the following diagram:
+
+////
+[source,mermaid]
+----
+flowchart TD
+    classDef unhealthy stroke:#f00
+    classDef healthy stroke:#0f0
+    HttpRequester
+    ServiceDiscovery
+    subgraph LoadBalancer
+        direction TB
+        HostSet[Host Set]
+        HostSelector[P2C HostSelector\npicks candidate hosts\nand selects the best option]
+        HealthChecker[Outlier Detector\ncomputes host health based\non statistics from all hosts]
+    end
+    subgraph Host0
+        HealthIndicator0[HealthIndicator\nmonitors individual host statistics]:::unhealthy
+        subgraph ConnectionPool0[Connection Pool]
+            Connection00[Connection0]
+            Connection01[Connection1]
+        end
+        %% helps orient the chart
+        HealthIndicator0 ~~~ ConnectionPool0
+    end
+    subgraph Host1
+        HealthIndicator1[HealthIndicator\nmonitors individual host statistics]:::healthy
+        subgraph ConnectionPool1[Connection Pool]
+            Connection10[Connection0]
+            Connection11[Connection1]
+        end
+        %% helps to orient the chart
+        HealthIndicator1 ~~~ ConnectionPool1
+    end
+    %% make sure our hosts and close to the LoadBalancer
+    LoadBalancer ~~~ Host0 & Host1
+    HttpRequester ~~~ LoadBalancer
+    HostSelector -.-x |unhealthy host\navoided| HealthIndicator0
+    HttpRequester -.-> |select connection| HostSelector -.-> |healthy host\npreferred| HealthIndicator1
+    HealthIndicator1 -.-> Connection11
+    %% to make the boxes the same size
+    HealthIndicator0 ~~~ Connection01
+    HealthChecker <--> HealthIndicator0 & HealthIndicator1
+    ServiceDiscovery --> |update host set| HostSet --> |rebuild HostSelector \nwith new host set| HostSelector
+----
+////
+image::healthindicatordiagram.png[Health Indicator Structure, align="center"]
+
+=== Connection Acquisition Workflow
+
+By default, ServiceTalk attempts to minimize the connection load to each host. If the situation arises where there is
+not an existing session capable of serving a request then connection acquisition can happen on the request path. The
+session acquisition flow is roughly like this:
+
+////
+[source,mermaid]
+----
+sequenceDiagram
+    participant requester
+    participant load-balancer
+    participant host
+    participant connection-factory
+    requester->>load-balancer: request a connection
+    load-balancer->>host: select a connection from the host
+    host->>host: use connection from pool
+    host-->>requester: connection reuse
+    host->>connection-factory: create new connection
+    connection-factory->>host: connection created and added to pool
+    host->>requester: connection returned
+----
+////
+image::connectionacquisitiondiagram.png[Connection Acquisition, align="center"]
+
+== Future Capabilities
+
+=== Weighted Load Balancing
+
+Not all hosts are created equal! Due to different underlying hardware platforms, other tenants on the same host, or even
+just a bad cache day, we often find that not all instances of a service have the same capacity. The P2C selection
+algorithm can bias toward better performing hosts, but if the capacity of a backend is known it can be accounted for
+explicitly. With link:{source-root}/servicetalk-client-api/src/main/java/io/servicetalk/client/api/ServiceDiscoverer.java[ServiceDiscoverer]
+or control-plane support we can explicitly propagate weight information to ServiceTalk's default load balancer. Adding
+weight support to the host selection process will let users leverage this data.
+
+=== Priority Groups
+
+Priority groups are another notion of weights in load balancing. Priority groups are a feature of the xDS protocol that
+lets users partition backend instances into groups that have a relative priority to each other. The load balancer will
+use hosts from as many priority groups as necessary to maintain a minimum specified number of healthy backends. A
+common use case is to specify a primary destination, usually locally, for latency and transit cost reasons while
+maintaining a set of backup destinations to use in the case of local disruptions.
+
+=== Subsetting
+
+When the sizes of two connected clusters grow the number of connections can become burdensome if the load balancer
+maintains a full mesh network. Sub-setting can reduce the connection count by only creating connections to a subset of
+backends. There are a number of ways to determine ths subset which can range from simple random sub-setting, which is
+trivial to implement but suffers from load variance, to more intricate models.

@@ -1,0 +1,28 @@
+header .navbar, footer.footer {
+    background-color: #364550;
+}
+
+code {
+    hyphens: none;
+    -webkit-hyphens: none;
+    -ms-hyphens: none;
+}
+
+.small { font-size: 0.75em; }
+
+.navigation-container {
+    width: 13rem;
+}
+
+header .navbar .navbar-item a {
+    display: flex;
+}
+
+header .navbar .navbar-logo {
+    margin-right: 12px;
+    width: 28px;
+}
+
+.footer p {
+    color: #fff;
+}

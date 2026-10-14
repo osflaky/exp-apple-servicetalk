@@ -1,0 +1,294 @@
+/*
+ * Copyright © 2019, 2026 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.http.api.HttpHeaders;
+
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
+import io.netty.handler.codec.http2.Http2Headers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import javax.annotation.Nullable;
+
+import static io.netty.handler.codec.http.HttpHeaderNames.TE;
+import static io.netty.handler.codec.http.HttpHeaderValues.TRAILERS;
+import static io.servicetalk.buffer.api.CharSequences.contentEqualsIgnoreCase;
+import static io.servicetalk.buffer.api.CharSequences.newAsciiString;
+import static io.servicetalk.http.api.HttpHeaderNames.CONNECTION;
+import static io.servicetalk.http.api.HttpHeaderNames.COOKIE;
+import static io.servicetalk.http.api.HttpHeaderNames.TRANSFER_ENCODING;
+import static io.servicetalk.http.api.HttpHeaderNames.UPGRADE;
+import static io.servicetalk.http.api.HttpHeaderValues.KEEP_ALIVE;
+import static io.servicetalk.http.netty.HeaderUtils.indexOf;
+import static java.lang.Boolean.parseBoolean;
+import static java.lang.System.getProperty;
+
+final class H2ToStH1Utils {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(H2ToStH1Utils.class);
+
+    static final CharSequence PROXY_CONNECTION = newAsciiString("proxy-connection");
+    /**
+     * Keep consistent with {@link io.servicetalk.http.api.HeaderUtils}.
+     * <p>
+     * Whether cookie parsing should be strictly spec compliant with
+     * <a href="https://www.rfc-editor.org/rfc/rfc6265">RFC6265</a> ({@code true}), or allow some deviations that are
+     * commonly observed in practice and allowed by the obsolete
+     * <a href="https://www.rfc-editor.org/rfc/rfc2965">RFC2965</a>/
+     * <a href="https://www.rfc-editor.org/rfc/rfc2109">RFC2109</a> ({@code false}, the default).
+     */
+    private static final String COOKIE_STRICT_RFC_6265_PROPERTY =
+            "io.servicetalk.http.api.headers.cookieParsingStrictRfc6265";
+    static final boolean COOKIE_STRICT_RFC_6265 = parseBoolean(getProperty(
+            COOKIE_STRICT_RFC_6265_PROPERTY, "false"));
+
+    static {
+        LOGGER.debug("-D{}={}", COOKIE_STRICT_RFC_6265_PROPERTY, COOKIE_STRICT_RFC_6265);
+    }
+
+    private H2ToStH1Utils() {
+        // no instances.
+    }
+
+    static void h2HeadersSanitizeForH1(Http2Headers h2Headers) {
+        h2HeadersCompressCookieCrumbs(h2Headers);
+    }
+
+    /**
+     * Validate a {@code :path} pseudo-header value: non-empty, visible US-ASCII only ({@code VCHAR},
+     * {@code 0x21-0x7e}).
+     * <p>
+     * <a href="https://www.rfc-editor.org/rfc/rfc9113#section-8.3.1">RFC 9113, 8.3.1</a> requires "exactly one valid
+     * value", non-empty for an {@code http}/{@code https} URI, and its {@code absolute-path [ "?" query ]} production
+     * resolves through <a href="https://www.rfc-editor.org/rfc/rfc9110#section-4.1">RFC 9110, 4.1</a> to
+     * <a href="https://www.rfc-editor.org/rfc/rfc3986#section-3.3">RFC 3986, 3.3</a>, which is US-ASCII only:
+     * {@code SP}, {@code DEL}, the controls and {@code obs-text} ({@code 0x80-0xff}) are all excluded, so anything
+     * outside that set must be percent-encoded by whoever produces the URI. The laxer generic field rules (8.2.1,
+     * {@code field-vchar}, which permit {@code obs-text} and interior {@code SP}) are not the authority for a
+     * pseudo-header: 8.3 makes an invalid one malformed and
+     * <a href="https://www.rfc-editor.org/rfc/rfc9113#section-8.1.1">8.1.1</a> a {@code PROTOCOL_ERROR} that
+     * {@code MUST NOT} be forwarded, "deliberately strict" because of attacks against HTTP.
+     * <p>
+     * We enforce the {@code VCHAR} superset, not the exact {@code pchar} set, matching {@code HttpObjectDecoder} for
+     * an HTTP/1.x request-target: {@code pchar} also excludes {@code #}, {@code [}, {@code ]} and {@code |}, commonly
+     * sent unencoded, so rejecting those is a separate compatibility decision.
+     *
+     * @param path the {@code :path} pseudo-header value to validate, {@code null} if absent
+     * @return a description of why {@code path} is invalid, or {@code null} if it is valid
+     */
+    @Nullable
+    static String invalidPathReason(@Nullable final CharSequence path) {
+        if (path == null) {
+            return "':path' is missing";
+        }
+        final int len = path.length();
+        if (len == 0) {
+            // CONNECT omits :path entirely and never reaches here. An outbound request with no path component sends
+            // "/" instead of an empty value, so only a peer can trigger this.
+            return "':path' must not be empty";
+        }
+        for (int i = 0; i < len; ++i) {
+            final char c = path.charAt(i);
+            if (!HttpObjectDecoder.isVCHAR(c)) {
+                // Keep the "expected" wording identical to HttpObjectDecoder's request-target check.
+                return "':path' contains an illegal character at index " + i + ": 0x" + Integer.toHexString(c) +
+                        ", expected [VCHAR (0x21-0x7e)]";
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Combine the cookie values into 1 header entry as required by
+     * <a href="https://tools.ietf.org/html/rfc7540#section-8.1.2.5">RFC 7540, 8.1.2.5</a>.
+     *
+     * @param h2Headers The headers which may contain cookies.
+     */
+    static void h2HeadersCompressCookieCrumbs(Http2Headers h2Headers) {
+        // Netty's value iterator doesn't return elements in insertion order, this is not strictly compliant with the
+        // RFC and may result in reversed order cookies.
+        Iterator<? extends CharSequence> cookieItr = h2Headers.valueIterator(HttpHeaderNames.COOKIE);
+        if (cookieItr.hasNext()) {
+            CharSequence prevCookItr = cookieItr.next();
+            if (cookieItr.hasNext()) {
+                CharSequence cookieHeader = cookieItr.next();
+                // *2 gives some space for an extra cookie.
+                StringBuilder sb = new StringBuilder(prevCookItr.length() * 2 + cookieHeader.length() + 2);
+                sb.append(prevCookItr).append("; ").append(cookieHeader);
+                while (cookieItr.hasNext()) {
+                    cookieHeader = cookieItr.next();
+                    sb.append("; ").append(cookieHeader);
+                }
+                h2Headers.set(HttpHeaderNames.COOKIE, sb.toString());
+            }
+        }
+    }
+
+    /**
+     * Split up cookies to allow for better compression as described in
+     * <a href="https://tools.ietf.org/html/rfc7540#section-8.1.2.5">RFC 7540, 8.1.2.5</a>.
+     *
+     * @param h1Headers The headers which may contain cookies.
+     */
+    static void h1HeadersSplitCookieCrumbs(HttpHeaders h1Headers) {
+        Iterator<? extends CharSequence> cookieItr = h1Headers.valuesIterator(COOKIE);
+        // We want to avoid "concurrent modifications" of the headers while we are iterating. So we insert crumbs
+        // into an intermediate collection and insert them after the split process concludes.
+        List<CharSequence> cookiesToAdd = null;
+        while (cookieItr.hasNext()) {
+            CharSequence nextCookie = cookieItr.next();
+            int i = indexOf(nextCookie, ';', 0);
+            if (i > 0) {
+                if (cookiesToAdd == null) {
+                    cookiesToAdd = new ArrayList<>(4);
+                }
+                int start = 0;
+                if (COOKIE_STRICT_RFC_6265) {
+                    do {
+                        final CharSequence cookieCrumb = nextCookie.subSequence(start, i);
+                        cookiesToAdd.add(cookieCrumb);
+                        if (i + 1 < nextCookie.length() && nextCookie.charAt(i + 1) != ' ') {
+                            throwNoSpaceAfterCookieCrumb(cookieCrumb);
+                        }
+                        if (nextCookie.length() - 2 <= i) {
+                            throwNotAllowedToEndWithSemicolon(cookieCrumb);
+                        }
+                        // skip 2 characters "; " (see https://tools.ietf.org/html/rfc6265#section-4.2.1).
+                        start = i + 2;
+                    } while (start >= 0 && start < nextCookie.length() &&
+                            (i = indexOf(nextCookie, ';', start)) >= 0);
+                } else {
+                    do {
+                        cookiesToAdd.add(nextCookie.subSequence(start, i));
+                        start = i + 1 < nextCookie.length() && nextCookie.charAt(i + 1) == ' ' ? i + 2 : i + 1;
+                    } while (start >= 0 && start < nextCookie.length() &&
+                            (i = indexOf(nextCookie, ';', start)) >= 0);
+                }
+                if (start >= 0 && start < nextCookie.length()) {
+                    cookiesToAdd.add(nextCookie.subSequence(start, nextCookie.length()));
+                }
+                cookieItr.remove();
+            }
+        }
+        if (cookiesToAdd != null) {
+            for (CharSequence crumb : cookiesToAdd) {
+                h1Headers.add(COOKIE, crumb);
+            }
+        }
+    }
+
+    private static void throwNoSpaceAfterCookieCrumb(CharSequence cookieCrumb) {
+        final int nameEnd = indexOf(cookieCrumb, '=', 0);
+        final CharSequence name = nameEnd > 0 ? cookieCrumb.subSequence(0, nameEnd) : cookieCrumb;
+        throw new IllegalArgumentException("cookie " + name +
+                " must have a space after ; in cookie attribute-value lists");
+    }
+
+    private static void throwNotAllowedToEndWithSemicolon(CharSequence cookieCrumb) {
+        final int nameEnd = indexOf(cookieCrumb, '=', 0);
+        final CharSequence name = nameEnd > 0 ? cookieCrumb.subSequence(0, nameEnd) : cookieCrumb;
+        throw new IllegalArgumentException("cookie '" + name + "': cookie is not allowed to end with ;");
+    }
+
+    static Http2Headers h1HeadersToH2Headers(HttpHeaders h1Headers) {
+
+        // H2 doesn't support connection headers, so remove each one, and the headers corresponding to the
+        // connection value.
+        // https://tools.ietf.org/html/rfc7540#section-8.1.2.2
+        Iterator<? extends CharSequence> connectionItr = h1Headers.valuesIterator(CONNECTION);
+        if (connectionItr.hasNext()) {
+            do {
+                CharSequence connectionHeader = connectionItr.next();
+                connectionItr.remove();
+                int i = indexOf(connectionHeader, ',', 0);
+                if (i != -1) {
+                    int start = 0;
+                    do {
+                        h1Headers.remove(connectionHeader.subSequence(start, i));
+                        start = i + 1;
+                        // Skip OWS
+                        if (start < connectionHeader.length() && connectionHeader.charAt(start) == ' ') {
+                            ++start;
+                        }
+                    } while (start < connectionHeader.length() && (i = indexOf(connectionHeader, ',', start)) != -1);
+                    h1Headers.remove(connectionHeader.subSequence(start, connectionHeader.length()));
+                } else {
+                    h1Headers.remove(connectionHeader);
+                }
+            } while (connectionItr.hasNext());
+        }
+
+        // remove other illegal headers
+        h1Headers.remove(KEEP_ALIVE);
+        h1Headers.remove(TRANSFER_ENCODING);
+        h1Headers.remove(UPGRADE);
+        h1Headers.remove(PROXY_CONNECTION);
+
+        // TE header is treated specially https://tools.ietf.org/html/rfc7540#section-8.1.2.2
+        // (only value of "trailers" is allowed).
+        Iterator<? extends CharSequence> teItr = h1Headers.valuesIterator(TE);
+        boolean addTrailers = false;
+        while (teItr.hasNext()) {
+            final CharSequence teSequence = teItr.next();
+            if (addTrailers) {
+                teItr.remove();
+            } else {
+                int i = indexOf(teSequence, ',', 0);
+                if (i != -1) {
+                    int start = 0;
+                    do {
+                        if (contentEqualsIgnoreCase(teSequence.subSequence(start, i), TRAILERS)) {
+                            addTrailers = true;
+                            break;
+                        }
+                        start = i + 1;
+                        // Check if we need to skip OWS
+                        // https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.4
+                        if (start < teSequence.length() && teSequence.charAt(start) == ' ') {
+                            ++start;
+                        }
+                    } while (start < teSequence.length() && (i = indexOf(teSequence, ',', start)) != -1);
+
+                    if (!addTrailers && start < teSequence.length() &&
+                            contentEqualsIgnoreCase(teSequence.subSequence(start, teSequence.length()), TRAILERS)) {
+                        addTrailers = true;
+                    }
+                    teItr.remove();
+                } else if (!contentEqualsIgnoreCase(teSequence, TRAILERS)) {
+                    teItr.remove();
+                }
+            }
+        }
+        if (addTrailers) { // add after iteration to avoid concurrent modification.
+            h1Headers.add(TE, TRAILERS);
+        }
+
+        h1HeadersSplitCookieCrumbs(h1Headers);
+        if (h1Headers.isEmpty()) {
+            return new DefaultHttp2Headers(false, 0);
+        }
+
+        // These will be used by the netty encoder so we need to make sure when we give it keys they're lower cased.
+        // validateNames=false: on this outbound path the names were already validated at the HTTP API layer when
+        // they were added to h1Headers (HeaderUtils.validateToken), so ServiceTalkHttp2Headers must not re-validate.
+        return new ServiceTalkHttp2Headers(h1Headers, true, false, false);
+    }
+}

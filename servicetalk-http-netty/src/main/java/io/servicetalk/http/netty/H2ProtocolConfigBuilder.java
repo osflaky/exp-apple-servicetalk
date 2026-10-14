@@ -1,0 +1,282 @@
+/*
+ * Copyright © 2019-2022 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.http.api.Http2Settings;
+import io.servicetalk.http.api.Http2SettingsBuilder;
+import io.servicetalk.http.api.HttpHeaders;
+import io.servicetalk.http.api.HttpHeadersFactory;
+import io.servicetalk.http.netty.H2ProtocolConfig.KeepAlivePolicy;
+import io.servicetalk.logging.api.LogLevel;
+import io.servicetalk.logging.api.UserDataLoggerConfig;
+import io.servicetalk.logging.slf4j.internal.DefaultUserDataLoggerConfig;
+
+import java.util.function.BiPredicate;
+import java.util.function.BooleanSupplier;
+import javax.annotation.Nullable;
+
+import static io.servicetalk.buffer.api.CharSequences.contentEqualsIgnoreCase;
+import static io.servicetalk.buffer.api.CharSequences.regionMatches;
+import static io.servicetalk.http.api.HttpHeaderNames.AUTHORIZATION;
+import static io.servicetalk.http.api.HttpHeaderNames.COOKIE;
+import static io.servicetalk.http.api.HttpHeaderNames.DPOP;
+import static io.servicetalk.http.api.HttpHeaderNames.DPOP_NONCE;
+import static io.servicetalk.http.api.HttpHeaderNames.SET_COOKIE;
+import static io.servicetalk.http.api.HttpHeaderNames.SET_COOKIE2;
+import static io.servicetalk.http.netty.H2KeepAlivePolicies.disabled;
+import static io.servicetalk.http.netty.H2KeepAlivePolicies.validateKeepAlivePolicy;
+import static io.servicetalk.utils.internal.NumberUtils.ensurePositive;
+import static java.util.Objects.requireNonNull;
+
+/**
+ * Builder for {@link H2ProtocolConfig}.
+ *
+ * @see HttpProtocolConfigs#h2()
+ */
+public final class H2ProtocolConfigBuilder {
+
+    private static final CharSequence API_KEY_SUFFIX = "api-key";
+    private static final CharSequence AUTHENTICATE_SUFFIX = "authenticate";
+    private static final CharSequence SIGNATURE_SUFFIX = "signature";
+    private static final CharSequence TOKEN_SUFFIX = "token";
+    private static final CharSequence TOKEN_ID_SUFFIX = "token-id";
+
+    // Marks common auth/credential headers as <a href="https://tools.ietf.org/html/rfc7541#section-7.1.3">sensitive</a>
+    // so they aren't stored in the HPACK dynamic table; includes the
+    // <a href="https://datatracker.ietf.org/doc/html/rfc9449#section-4.1">DPoP</a> proof header.
+    // The suffix matches (e.g. "*-token", "*-signature") err on the safe side: some headers ending in
+    // these suffixes may not actually carry secrets, but we prefer to skip indexing them rather than
+    // risk leaking credentials via the HPACK dynamic table. Callers needing a narrower policy can
+    // override via {@link #headersSensitivityDetector(BiPredicate)}.
+    private static final BiPredicate<CharSequence, CharSequence> DEFAULT_SENSITIVITY_DETECTOR = (name, value) ->
+            contentEqualsIgnoreCase(name, COOKIE)
+                    || contentEqualsIgnoreCase(name, DPOP)
+                    || contentEqualsIgnoreCase(name, DPOP_NONCE)
+                    || contentEqualsIgnoreCase(name, SET_COOKIE)
+                    || contentEqualsIgnoreCase(name, SET_COOKIE2)
+                    || endsWithIgnoreCase(name, API_KEY_SUFFIX)
+                    || endsWithIgnoreCase(name, AUTHENTICATE_SUFFIX)
+                    || endsWithIgnoreCase(name, AUTHORIZATION)
+                    || endsWithIgnoreCase(name, SIGNATURE_SUFFIX)
+                    || endsWithIgnoreCase(name, TOKEN_ID_SUFFIX)
+                    || endsWithIgnoreCase(name, TOKEN_SUFFIX);
+
+    /**
+     * Netty currently doubles the connection window by default so a single stream doesn't exhaust all flow control
+     * bytes.
+     */
+    private static final int CONNECTION_STREAM_FLOW_CONTROL_INCREMENT = 0;
+    /**
+     * Default allocation quantum to use for the remote flow controller.
+     */
+    private static final int DEFAULT_FLOW_CONTROL_QUANTUM = 1024 * 16;
+    private Http2Settings h2Settings = new Http2SettingsBuilder().build();
+    private HttpHeadersFactory headersFactory = H2HeadersFactory.INSTANCE;
+    private BiPredicate<CharSequence, CharSequence> headersSensitivityDetector = DEFAULT_SENSITIVITY_DETECTOR;
+    @Nullable
+    private UserDataLoggerConfig frameLoggerConfig;
+    private KeepAlivePolicy keepAlivePolicy = disabled();
+    private int flowControlQuantum = DEFAULT_FLOW_CONTROL_QUANTUM;
+    private int flowControlIncrement = CONNECTION_STREAM_FLOW_CONTROL_INCREMENT;
+
+    H2ProtocolConfigBuilder() {
+    }
+
+    /**
+     * Sets the {@link HttpHeadersFactory} to be used for creating {@link HttpHeaders} when decoding HTTP messages.
+     *
+     * @param headersFactory {@link HttpHeadersFactory} to be used for creating {@link HttpHeaders} when decoding HTTP
+     * messages
+     * @return {@code this}
+     */
+    public H2ProtocolConfigBuilder headersFactory(final HttpHeadersFactory headersFactory) {
+        this.headersFactory = requireNonNull(headersFactory);
+        return this;
+    }
+
+    /**
+     * Sets the sensitivity detector to determine if a header {@code name}/{@code value} pair should be treated as
+     * <a href="https://tools.ietf.org/html/rfc7541#section-7.1.3">sensitive</a>.
+     *
+     * @param headersSensitivityDetector the {@link BiPredicate}&lt;{@link CharSequence}, {@link CharSequence}&gt; that
+     * returns {@code true} if a header &lt;{@code name}, {@code value}&gt; pair should be treated as
+     * <a href="https://tools.ietf.org/html/rfc7541#section-7.1.3">sensitive</a>, {@code false} otherwise
+     * @return {@code this}
+     */
+    public H2ProtocolConfigBuilder headersSensitivityDetector(
+            final BiPredicate<CharSequence, CharSequence> headersSensitivityDetector) {
+        this.headersSensitivityDetector = requireNonNull(headersSensitivityDetector);
+        return this;
+    }
+
+    /**
+     * Enables a logger for HTTP/2 frames.
+     *
+     * @param loggerName provides the logger to log HTTP/2 frames.
+     * @param logLevel the level to log HTTP/2 frames.
+     * @param logUserData {@code true} to include user data (e.g. data, headers, etc.). {@code false} to exclude user
+     * data and log only network events. This method is invoked for each data object allowing for dynamic behavior.
+     * @return {@code this}
+     */
+    public H2ProtocolConfigBuilder enableFrameLogging(final String loggerName,
+                                                      final LogLevel logLevel,
+                                                      final BooleanSupplier logUserData) {
+        frameLoggerConfig = new DefaultUserDataLoggerConfig(loggerName, logLevel, logUserData);
+        return this;
+    }
+
+    /**
+     * Sets the {@link KeepAlivePolicy} to use.
+     *
+     * @param policy {@link KeepAlivePolicy} to use.
+     * @return {@code this}
+     * @see H2KeepAlivePolicies
+     */
+    public H2ProtocolConfigBuilder keepAlivePolicy(final KeepAlivePolicy policy) {
+        // Run validation in case someone passes a custom implementation of KeepAlivePolicy
+        this.keepAlivePolicy = validateKeepAlivePolicy(policy);
+        return this;
+    }
+
+    /**
+     * Sets the initial <a href="https://datatracker.ietf.org/doc/html/rfc7540#section-6.5.1">HTTP/2 Setting</a> to for
+     * each h2 connection.
+     * @param settings the initial settings to for each h2 connection.
+     * @return {@code this}
+     * @see Http2SettingsBuilder
+     */
+    public H2ProtocolConfigBuilder initialSettings(Http2Settings settings) {
+        this.h2Settings = requireNonNull(settings);
+        return this;
+    }
+
+    /**
+     * Provide a hint on the number of bytes that the flow controller will attempt to give to a stream for each
+     * allocation (assuming the stream has this much eligible data).
+     * @param flowControlQuantum a hint on the number of bytes that the flow controller will attempt to give to a
+     * stream for each allocation (assuming the stream has this much eligible data).
+     * @return {@code this}
+     */
+    public H2ProtocolConfigBuilder flowControlQuantum(int flowControlQuantum) {
+        this.flowControlQuantum = ensurePositive(flowControlQuantum, "flowControlQuantum");
+        return this;
+    }
+
+    /**
+     * Increment to apply to {@link Http2Settings#initialWindowSize()} for the connection stream. This expands the
+     * connection flow control window so a single stream can't consume all the flow control credits.
+     * @param connectionWindowIncrement The number of bytes to increment the local flow control window for the
+     * connection stream.
+     * @return {@code this}
+     */
+    public H2ProtocolConfigBuilder flowControlWindowIncrement(int connectionWindowIncrement) {
+        this.flowControlIncrement = ensurePositive(connectionWindowIncrement, "connectionWindowIncrement");
+        return this;
+    }
+
+    /**
+     * Builds {@link H2ProtocolConfig}.
+     *
+     * @return {@link H2ProtocolConfig}
+     */
+    public H2ProtocolConfig build() {
+        return new DefaultH2ProtocolConfig(h2Settings, headersFactory, headersSensitivityDetector, frameLoggerConfig,
+                keepAlivePolicy, flowControlQuantum, flowControlIncrement);
+    }
+
+    private static boolean endsWithIgnoreCase(final CharSequence name, final CharSequence suffix) {
+        return name.length() >= suffix.length() &&
+                regionMatches(name, true, name.length() - suffix.length(), suffix, 0,
+                        suffix.length());
+    }
+
+    private static final class DefaultH2ProtocolConfig implements H2ProtocolConfig {
+        private final Http2Settings h2Settings;
+        private final HttpHeadersFactory headersFactory;
+        private final BiPredicate<CharSequence, CharSequence> headersSensitivityDetector;
+        @Nullable
+        private final UserDataLoggerConfig frameLoggerConfig;
+        private final KeepAlivePolicy keepAlivePolicy;
+        private final int flowControlQuantum;
+        private final int flowControlIncrement;
+
+        DefaultH2ProtocolConfig(final Http2Settings h2Settings,
+                                final HttpHeadersFactory headersFactory,
+                                final BiPredicate<CharSequence, CharSequence> headersSensitivityDetector,
+                                @Nullable final UserDataLoggerConfig frameLoggerConfig,
+                                final KeepAlivePolicy keepAlivePolicy,
+                                final int flowControlQuantum,
+                                final int flowControlIncrement) {
+            this.h2Settings = h2Settings;
+            this.headersFactory = headersFactory;
+            this.headersSensitivityDetector = headersSensitivityDetector;
+            this.frameLoggerConfig = frameLoggerConfig;
+            this.keepAlivePolicy = keepAlivePolicy;
+            this.flowControlQuantum = flowControlQuantum;
+            this.flowControlIncrement = flowControlIncrement;
+        }
+
+        @Override
+        public HttpHeadersFactory headersFactory() {
+            return headersFactory;
+        }
+
+        @Override
+        public BiPredicate<CharSequence, CharSequence> headersSensitivityDetector() {
+            return headersSensitivityDetector;
+        }
+
+        @Nullable
+        @Override
+        public UserDataLoggerConfig frameLoggerConfig() {
+            return frameLoggerConfig;
+        }
+
+        @Override
+        public KeepAlivePolicy keepAlivePolicy() {
+            return keepAlivePolicy;
+        }
+
+        @Override
+        public Http2Settings initialSettings() {
+            return h2Settings;
+        }
+
+        @Override
+        public int flowControlQuantum() {
+            return flowControlQuantum;
+        }
+
+        @Override
+        public int flowControlWindowIncrement() {
+            return flowControlIncrement;
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() +
+                    "{alpnId=" + alpnId() +
+                    ", headersFactory=" + headersFactory +
+                    ", headersSensitivityDetector=" + (headersSensitivityDetector == DEFAULT_SENSITIVITY_DETECTOR ?
+                    "DEFAULT_SENSITIVITY_DETECTOR" : headersSensitivityDetector.toString()) +
+                    ", frameLoggerConfig=" + frameLoggerConfig +
+                    ", keepAlivePolicy=" + keepAlivePolicy +
+                    ", flowControlQuantum=" + flowControlQuantum +
+                    ", flowControlIncrement=" + flowControlIncrement +
+                    ", h2Settings=" + h2Settings + '}';
+        }
+    }
+}

@@ -1,0 +1,63 @@
+/*
+ * Copyright © 2018-2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+plugins {
+  id "com.gradleup.shadow" version "$shadowPluginVersion"
+  id "me.champeau.jmh" version "$jmhPluginVersion"
+}
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+
+dependencies {
+  jmhImplementation platform("com.fasterxml.jackson:jackson-bom:$jacksonVersion")
+  jmhImplementation platform("io.netty:netty-bom:$nettyVersion")
+  jmhImplementation project(":servicetalk-annotations")
+  jmhImplementation project(":servicetalk-buffer-api")
+  jmhImplementation project(":servicetalk-buffer-netty")
+  jmhImplementation project(":servicetalk-client-api")
+  jmhImplementation project(":servicetalk-concurrent")
+  jmhImplementation project(":servicetalk-concurrent-api")
+  jmhImplementation project(":servicetalk-concurrent-api-internal")
+  jmhImplementation project(":servicetalk-concurrent-internal")
+  jmhImplementation project(":servicetalk-context-api")
+  jmhImplementation project(":servicetalk-data-jackson")
+  jmhImplementation project(":servicetalk-http-api")
+  jmhImplementation project(":servicetalk-http-netty")
+  jmhImplementation project(":servicetalk-loadbalancer")
+  jmhImplementation project(":servicetalk-serializer-api")
+  jmhImplementation project(":servicetalk-transport-api")
+  jmhImplementation project(":servicetalk-transport-netty-internal")
+  jmhImplementation "com.fasterxml.jackson.core:jackson-core"
+  jmhImplementation "com.fasterxml.jackson.core:jackson-databind"
+  jmhImplementation "io.netty:netty-buffer"
+  jmhImplementation "io.netty:netty-codec-http"
+  jmhImplementation "io.netty:netty-common"
+  jmhImplementation "io.netty:netty-transport"
+  jmhImplementation "org.openjdk.jmh:jmh-core:$jmhCoreVersion"
+}
+
+jmh {
+  includes = [".*Benchmark"]
+  jmhVersion = "$jmhCoreVersion"
+  jvmArgsPrepend = ["-Dio.netty.maxDirectMemory=9223372036854775807 " +
+                    "-Djmh.executor=CUSTOM " +
+                    "-Djmh.executor.class=io.servicetalk.benchmark.concurrent.AsyncContextFriendlyExecutor"]
+}
+
+jmhJar {
+  append('META-INF/spring.handlers')
+  append('META-INF/spring.schemas')
+}

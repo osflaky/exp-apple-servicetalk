@@ -1,0 +1,29 @@
+== ServiceTalk examples
+
+This directory contains a collection of examples on how to use different facets of ServiceTalk.
+See the https://docs.servicetalk.io/[ServiceTalk docs] for more information.
+
+Note that these projects use direct references to other ServiceTalk projects, as shown here:
+
+[source,groovy]
+----
+implementation project(":servicetalk-annotations")
+implementation project(":servicetalk-http-netty")
+implementation project(":servicetalk-http-utils")
+----
+
+Standalone projects using ServiceTalk will reference the ServiceTalk modules using standard artifacts coordinates as
+shown below. A separate https://github.com/servicetalk/examples[ServiceTalk examples repository] demonstrates how to
+reference ServiceTalk modules in typical projects.
+
+[source,groovy]
+----
+// `servicetalk-dependencies` brings consistent versions of ServiceTalk modules and required external dependencies
+implementation platform("io.servicetalk:servicetalk-dependencies:$serviceTalkVersion")
+
+// The version for all ServiceTalk dependencies will be resolved based on information in `servicetalk-dependencies`.
+implementation "io.servicetalk:servicetalk-annotations"
+implementation "io.servicetalk:servicetalk-http-netty"
+implementation "io.servicetalk:servicetalk-http-utils"
+----
+

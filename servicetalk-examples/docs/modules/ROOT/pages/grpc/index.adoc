@@ -1,0 +1,199 @@
+// Configure {source-root} values based on how this document is rendered: on GitHub or not
+ifdef::env-github[]
+:source-root:
+endif::[]
+ifndef::env-github[]
+ifndef::source-root[:source-root: https://github.com/apple/servicetalk/blob/{page-origin-refname}]
+endif::[]
+
+= gRPC Examples
+
+The link:{source-root}/servicetalk-examples/grpc[`grpc`] folder contains examples for
+link:https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md[the gRPC application protocol]. We provide
+implementations for the examples proto services provided by
+link:https://github.com/grpc/grpc/tree/master/examples/protos[gRPC].
+
+[#HelloWorld]
+== Hello World
+
+Implementation for the link:https://github.com/grpc/grpc/blob/master/examples/protos/helloworld.proto[gRPC hello world example].
+
+=== Asynchronous
+
+This example demonstrates asynchronous request processing for the hello world API using the
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/async/HelloWorldServer.java[HelloWorldServer]
+and a
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/async/HelloWorldClient.java[HelloWorldClient]
+
+=== Blocking
+
+This example demonstrates blocking request processing for the hello world API using the
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/blocking/BlockingHelloWorldServer.java[BlockingHelloWorldServer]
+and a
+link:{source-root}/servicetalk-examples/grpc/helloworld/src/main/java/io/servicetalk/examples/grpc/helloworld/blocking/BlockingHelloWorldClient.java[BlockingHelloWorldClient]
+
+[#route-guide]
+== Route guide
+
+Implementation for the link:https://github.com/grpc/grpc/blob/master/examples/protos/route_guide.proto[gRPC route guide example].
+
+=== Asynchronous
+
+Asynchronous processing for different APIs in the link:https://github.com/grpc/grpc/blob/master/examples/protos/route_guide.proto[route guide service]
+are demonstrated using the link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/async/RouteGuideServer.java[RouteGuideServer]
+and the following clients:
+
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/async/RouteGuideClient.java[RouteGuideClient] -
+`getFeature` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-aggregated[aggregated programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/async/streaming/RouteGuideRequestStreamingClient.java[RouteGuideRequestStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[request streaming programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/async/streaming/RouteGuideResponseStreamingClient.java[RouteGuideResponseStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[response streaming programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/async/streaming/RouteGuideStreamingClient.java[RouteGuideStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[bi-directional streaming programming paradigm].
+
+=== Blocking
+
+Blocking processing for different APIs in the link:https://github.com/grpc/grpc/blob/master/examples/protos/route_guide.proto[route guide service]
+are demonstrated using the link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/blocking/BlockingRouteGuideServer.java[BlockingRouteGuideServer]
+and the following clients:
+
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/blocking/BlockingRouteGuideClient.java[BlockingRouteGuideClient] -
+`getFeature` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-aggregated[aggregated programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/blocking/streaming/BlockingRouteGuideRequestStreamingClient.java[BlockingRouteGuideRequestStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[request streaming programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/blocking/streaming/BlockingRouteGuideResponseStreamingClient.java[BlockingRouteGuideResponseStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[response streaming programming paradigm].
+* link:{source-root}/servicetalk-examples/grpc/routeguide/src/main/java/io/servicetalk/examples/grpc/routeguide/blocking/streaming/BlockingRouteGuideStreamingClient.java[BlockingRouteGuideStreamingClient] -
+`recordRoute` API that uses the
+xref:{page-version}@servicetalk::programming-paradigms.adoc#asynchronous-and-streaming[bi-directional streaming programming paradigm].
+
+[#Compression]
+== Compression
+
+Extends the async "Hello World" example to demonstrate compression of the response body.
+
+* link:{source-root}/servicetalk-examples/grpc/compression/src/main/java/io/servicetalk/examples/grpc/compression/CompressionExampleServer.java[CompressionExampleServer] - Waits for hello request from the client and responds with a compressed greeting response.
+* link:{source-root}/servicetalk-examples/grpc/compression/src/main/java/io/servicetalk/examples/grpc/compression/CompressionExampleClient.java[CompressionExampleClient] - Sends a hello request to the server and receives a
+  compressed greeting response.
+
+[#Deadlines]
+== Deadlines
+
+Extends the async "Hello World" example to demonstrate
+https://grpc.io/docs/what-is-grpc/core-concepts/#deadlines[gRPC deadlines] (aka timeout).
+
+* link:{source-root}/servicetalk-examples/grpc/deadline/src/main/java/io/servicetalk/examples/grpc/deadline/DeadlineServer.java[DeadlineServer]
+ – Waits for hello request from the client and, after 5 seconds of delay, responds with a greeting response.
+* link:{source-root}/servicetalk-examples/grpc/deadline/src/main/java/io/servicetalk/examples/grpc/deadline/DeadlineClient.java[DeadlineClient]
+– Sends hello requests to the server with 1 minute deadline and 3 second deadline and receives a greeting response
+within that time or cancels the request.
+
+[#KeepAlive]
+== Keep Alive
+
+Demonstrates how to use HTTP/2 keep alive for gRPC
+link:{source-root}/servicetalk-examples/grpc/keepalive/src/main/java/io/servicetalk/examples/grpc/keepalive/KeepAliveServer.java[server]
+and
+link:{source-root}/servicetalk-examples/grpc/keepalive/src/main/java/io/servicetalk/examples/grpc/keepalive/KeepAliveClient.java[client].
+Keep alive uses transport control frames to ensure the peer is still able to read and write to open connections. If the
+peer is not able to respond to the control frame within the configured amount of time, the connection is closed. This
+is useful if your environment doesn't provide other forms of connection keep alive (e.g.
+link:https://docs.oracle.com/javase/8/docs/api/java/net/StandardSocketOptions.html#SO_KEEPALIVE[SO_KEEPALIVE], and maybe
+preferred to lower level keep alive because it is closer the application logic (more likely if this check works, that
+your application is able to read/write). Keep alive can be helpful to detect scenarios such as non-graceful disconnects
+(e.g. power outage, ethernet cable pulled, buggy middle box) and general network disconnects.
+
+[#Debugging]
+== Debugging
+
+Extends the blocking "Hello World" example to demonstrate configuration of debugging features.
+
+* link:{source-root}/servicetalk-examples/grpc/debugging/src/main/java/io/servicetalk/examples/grpc/debugging/DebuggingServer.java[DebuggingServer]
+– Waits for hello request from the client and responds with a greeting response.
+* link:{source-root}/servicetalk-examples/grpc/debugging/src/main/java/io/servicetalk/examples/grpc/debugging/DebuggingClient.java[DebuggingClient]
+– Sends hello requests to the server and receives a greeting response.
+
+[#Observer]
+== Observer
+This example demonstrates the following:
+- Use of
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcLifecycleObserver.java[GrpcLifecycleObserver] to log a summary of each request/response.
+
+Using the following classes:
+
+- link:{source-root}/servicetalk-examples/grpc/observer/src/main/java/io/servicetalk/examples/grpc/observer/LifecycleObserverServer.java[LifecycleObserverServer] - A server that installs a
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcLifecycleObserver.java[GrpcLifecycleObserver]
+on the server builder.
+- link:{source-root}/servicetalk-examples/grpc/observer/src/main/java/io/servicetalk/examples/grpc/observer/LifecycleObserverClient.java[LifecycleObserverClient] - A client that installs a
+link:{source-root}/servicetalk-grpc-api/src/main/java/io/servicetalk/grpc/api/GrpcLifecycleObserver.java[GrpcLifecycleObserver]
+on via a client filter on the client builder.
+
+[#Health]
+== Health Checking
+This example demonstrates the following:
+- Use of
+link:{source-root}/servicetalk-grpc-health/src/main/java/io/servicetalk/grpc/health/DefaultHealthService.java[DefaultHealthService]
+which implements link:https://github.com/grpc/grpc/blob/master/doc/health-checking.md[gRPC health checking] paired with a simple "hello world" service.
+
+Using the following classes:
+* link:{source-root}/servicetalk-examples/grpc/health/src/main/java/io/servicetalk/examples/grpc/health/HealthServerExample.java[HealthServerExample] a server
+that installs link:{source-root}/servicetalk-grpc-health/src/main/java/io/servicetalk/grpc/health/DefaultHealthService.java[DefaultHealthService] in addition to
+a simple "hello world" service.
+* link:{source-root}/servicetalk-examples/grpc/health/src/main/java/io/servicetalk/examples/grpc/health/HealthClientExample.java[HealthClientExample] a client
+that calls the "hello world" server, the "health check" server, and prints results.
+
+[#errors]
+== Application Errors
+The gRPC protocol supports propagating application level errors, and also provides serialization/deserialization of
+these objects. This example demonstrates a server returning an application level error to the client via the gRPC
+transport. The client intentionally omits the `token` field which is required, and the server returns an application
+level error. In this case the application level error type happens to be defined in
+link:https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto[error_details.proto], but it
+could be any protobuf object.
+
+* link:{source-root}/servicetalk-examples/grpc/errors/src/main/java/io/servicetalk/examples/grpc/errors/ErrorExampleServer.java[ErrorExampleServer] - Requires each request has a non-empty `token` field or else returns an
+error.
+* link:{source-root}/servicetalk-examples/grpc/errors/src/main/java/io/servicetalk/examples/grpc/errors/ErrorExampleClient.java[ErrorExampleClient] - Sends a request with missing `token` field to simulate an error
+condition on the server.
+
+[#execution-strategy]
+== Execution Strategy
+The gRPC implementation can be configured to execute all or some of the routes for a server without offloading. Using the `IoExecutor` for executing routes is appropriate only if there is no possibility that the route implementation will block.
+
+The example demonstrates the impact of different route execution strategy configuration mechanisms.
+
+* link:{source-root}/servicetalk-examples/grpc/execution-strategy/src/main/java/io/servicetalk/examples/grpc/strategies/ExecutionStrategyServer.java[ExecutionStrategyServer] - Starts multiple servers configured using a variety of modes and techniques to specify the execution strategy to be used.
+* link:{source-root}/servicetalk-examples/grpc/execution-strategy/src/main/java/io/servicetalk/examples/grpc/strategies/ExecutionStrategyClient.java[ExecutionStrategyClient] - Sends requests to each of the differently configured servers and reports execution details.
+
+[#protoc-options]
+== Protoc Options
+
+This example demonstrates how options for the servicetalk-grpc-protoc plugin can be used. See
+link:{source-root}/servicetalk-examples/grpc/protoc-options[protoc-options] for more details.
+
+[#request-response-context]
+== Request Response Context
+
+This example demonstrates how request and response context can be used to access HTTP meta-data.
+
+=== Asynchronous
+
+This example demonstrates context with asynchronous request processing using the
+link:{source-root}/servicetalk-examples/grpc/request-response-context/src/main/java/io/servicetalk/examples/grpc/context/async/RequestResponseContextClient.java[RequestResponseContextClient]
+and a
+link:{source-root}/servicetalk-examples/grpc/request-response-context/src/main/java/io/servicetalk/examples/grpc/context/async/RequestResponseContextServer.java[RequestResponseContextServer].
+
+=== Blocking
+
+This example demonstrates context with blocking request processing using the
+link:{source-root}/servicetalk-examples/grpc/request-response-context/src/main/java/io/servicetalk/examples/grpc/context/blocking/BlockingRequestResponseContextClient.java[BlockingRequestResponseContextClient]
+and a
+link:{source-root}/servicetalk-examples/grpc/request-response-context/src/main/java/io/servicetalk/examples/grpc/context/blocking/BlockingRequestResponseContextServer.java[BlockingRequestResponseContextServer].

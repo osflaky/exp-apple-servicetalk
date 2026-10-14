@@ -1,0 +1,107 @@
+/*
+ * Copyright © 2024 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.loadbalancer;
+
+import io.servicetalk.client.api.LoadBalancedConnection;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.List;
+
+import static io.servicetalk.loadbalancer.OutlierDetectorConfig.enforcing;
+
+final class FailurePercentageXdsOutlierDetectorAlgorithm<ResolvedAddress, C extends LoadBalancedConnection>
+        implements XdsOutlierDetectorAlgorithm<ResolvedAddress, C> {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(FailurePercentageXdsOutlierDetectorAlgorithm.class);
+
+    // We use a sentinel value to mark values as 'skipped' so we don't need to create a dynamically sized
+    // data structure for longs which would require boxing.
+    private static final long NOT_EVALUATED = Long.MAX_VALUE;
+
+    private final String lbDescription;
+
+    private long[] failurePercentages = new long[0];
+
+    FailurePercentageXdsOutlierDetectorAlgorithm(final String lbDescription) {
+        this.lbDescription = lbDescription;
+    }
+
+    @Override
+    public void detectOutliers(final OutlierDetectorConfig config,
+                               final List<? extends XdsHealthIndicator<ResolvedAddress, C>> indicators,
+                               final boolean[] outliers) {
+        final int size = indicators.size();
+        // Because we always overwrite every element before accessing there is no need to zero the array on reuse.
+        if (failurePercentages.length != size) {
+            failurePercentages = new long[size];
+        }
+        int i = 0;
+        int enoughVolumeHosts = 0;
+        int alreadyEjectedHosts = 0;
+        for (XdsHealthIndicator<?, ?> indicator : indicators) {
+            if (!indicator.isHealthy()) {
+                // Already-ejected hosts are excluded from analysis and left to the caller to keep ejected; we
+                // don't OR them into the verdict.
+                failurePercentages[i] = NOT_EVALUATED;
+                alreadyEjectedHosts++;
+            } else {
+                long successes = indicator.getSuccesses();
+                long failures = indicator.getFailures();
+                long totalRequests = successes + failures;
+                if (totalRequests >= config.failurePercentageRequestVolume()) {
+                    enoughVolumeHosts++;
+                    failurePercentages[i] = failures * 100L / totalRequests;
+                } else {
+                    // Hosts that don't meet the request volume threshold (including idle hosts with no
+                    // requests) are not eligible for ejection. This mirrors Envoy, which only ejects hosts with
+                    // sufficient volume; otherwise a single failure on a low-traffic host would read as 100%
+                    // failure and eject it.
+                    failurePercentages[i] = NOT_EVALUATED;
+                }
+            }
+            i++;
+        }
+
+        if (enoughVolumeHosts < config.failurePercentageMinimumHosts()) {
+            // not enough hosts with enough volume to do the analysis.
+            if (LOGGER.isDebugEnabled()) {
+                LOGGER.debug("{}: Not enough hosts with sufficient volume to perform ejection: " +
+                                "{} total hosts and {} had sufficient volume. Minimum {} required.",
+                        lbDescription, indicators.size(), enoughVolumeHosts, config.failurePercentageMinimumHosts());
+            }
+            return;
+        }
+
+        final double failurePercentageThreshold = config.failurePercentageThreshold();
+        int flaggedCount = 0;
+        for (i = 0; i < failurePercentages.length; i++) {
+            long failurePercentage = failurePercentages[i];
+            if (failurePercentage != NOT_EVALUATED && failurePercentage >= failurePercentageThreshold &&
+                    enforcing(config.enforcingFailurePercentage())) {
+                outliers[i] = true;
+                flaggedCount++;
+            }
+        }
+        if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("{}: Finished failure percentage analysis. Of {} total hosts {} were already ejected by " +
+                            "any algorithm, {} had insufficient request volume, and {} were flagged as outliers.",
+                    lbDescription, indicators.size(), alreadyEjectedHosts,
+                    indicators.size() - enoughVolumeHosts - alreadyEjectedHosts, flaggedCount);
+        }
+    }
+}

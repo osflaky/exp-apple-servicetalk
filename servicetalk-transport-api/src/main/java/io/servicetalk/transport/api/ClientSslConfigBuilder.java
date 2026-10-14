@@ -1,0 +1,226 @@
+/*
+ * Copyright © 2021, 2023 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.transport.api;
+
+import java.io.InputStream;
+import java.time.Duration;
+import java.util.List;
+import java.util.function.Supplier;
+import javax.annotation.Nullable;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.TrustManagerFactory;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * Default builder for {@link ClientSslConfig} objects.
+ */
+public final class ClientSslConfigBuilder extends AbstractSslConfigBuilder<ClientSslConfigBuilder> {
+    /**
+     * See <a href="https://docs.oracle.com/javase/8/docs/technotes/guides/security/StandardNames.html#jssenames">
+     * Endpoint Identification Algorithm Name</a>.
+     */
+    @Nullable
+    private String hostnameVerificationAlgorithm = "HTTPS";
+    @Nullable
+    private String peerHost;
+    private int peerPort = -1;
+    @Nullable
+    private String sniHostname;
+
+    /**
+     * Create a new instance using this JVM's {@link TrustManagerFactory#getDefaultAlgorithm()} and default
+     * {@link TrustManagerFactory}.
+     */
+    public ClientSslConfigBuilder() {
+    }
+
+    /**
+     * Create a new instance using a {@link SSLContext} for key and trust configuration.
+     *
+     * @param sslContext the {@link SSLContext} to use for SSL/TLS.
+     * @see ClientSslConfig#sslContext()
+     */
+    public ClientSslConfigBuilder(SSLContext sslContext) {
+        sslContext(sslContext);
+    }
+
+    /**
+     * Create a new instance using {@code tmf} to verify trusted servers.
+     *
+     * @param tmf The {@link TrustManagerFactory} used to verify trusted servers.
+     * @see ClientSslConfig#trustManagerFactory()
+     */
+    public ClientSslConfigBuilder(TrustManagerFactory tmf) {
+        trustManager(requireNonNull(tmf));
+    }
+
+    /**
+     * Create a new instance using {@code trustCertChainSupplier} to verify trusted servers.
+     * @param trustCertChainSupplier the trusted certificates for verifying the remote endpoint's certificate. The input
+     * stream should contain an {@code X.509} certificate chain in {@code PEM} format.
+     * <p>
+     * Each invocation of the {@link Supplier} should provide an independent instance of {@link InputStream} and the
+     * caller is responsible for invoking {@link InputStream#close()}.
+     *
+     * @see ClientSslConfig#trustCertChainSupplier()
+     */
+    public ClientSslConfigBuilder(Supplier<InputStream> trustCertChainSupplier) {
+        trustManager(trustCertChainSupplier);
+    }
+
+    /**
+     * Set the algorithm to use for hostname verification to verify the
+     * <a href="https://tools.ietf.org/html/rfc2818#section-3.1">server identity</a>.
+     *
+     * @param algorithm The algorithm to use when verifying the host name.
+     * See <a href="https://docs.oracle.com/javase/8/docs/technotes/guides/security/StandardNames.html#jssenames">
+     * Endpoint Identification Algorithm Name</a>.
+     * An empty {@code String} ({@code ""}) disables hostname verification.
+     * @return {@code this}.
+     * @see ClientSslConfig#hostnameVerificationAlgorithm()
+     * @see SSLParameters#setEndpointIdentificationAlgorithm(String)
+     */
+    public ClientSslConfigBuilder hostnameVerificationAlgorithm(String algorithm) {
+        this.hostnameVerificationAlgorithm = requireNonNull(algorithm);
+        return this;
+    }
+
+    /**
+     * Set the non-authoritative name of the peer.
+     *
+     * @param peerHost the non-authoritative name of the peer.
+     * @return {@code this}.
+     * @see ClientSslConfig#peerHost()
+     * @see SSLEngine#getPeerHost()
+     */
+    public ClientSslConfigBuilder peerHost(@Nullable String peerHost) {
+        this.peerHost = peerHost;
+        return this;
+    }
+
+    /**
+     * Set the non-authoritative port of the peer.
+     *
+     * @param peerPort the non-authoritative port of the peer, or {@code -1} if unavailable (which may prevent
+     * <a href="https://tools.ietf.org/html/rfc5077">session resumption</a>).
+     * @return {@code this}.
+     * @see ClientSslConfig#peerPort()
+     * @see SSLEngine#getPeerPort()
+     */
+    public ClientSslConfigBuilder peerPort(int peerPort) {
+        if (peerPort < -1) {
+            throw new IllegalArgumentException("peerPort: " + peerPort + "(expected >=-1)");
+        }
+        this.peerPort = peerPort;
+        return this;
+    }
+
+    /**
+     * Set the <a href="https://tools.ietf.org/html/rfc6066#section-3">SNI</a> host name.
+     *
+     * @param sniHostname <a href="https://tools.ietf.org/html/rfc6066#section-3">SNI</a> host name.
+     * @return {@code this}.
+     * @see ClientSslConfig#sniHostname()
+     * @see SSLParameters#setServerNames(List)
+     */
+    public ClientSslConfigBuilder sniHostname(String sniHostname) {
+        if (sniHostname.isEmpty()) {
+            throw new IllegalArgumentException("sniHostname cannot be empty");
+        }
+        this.sniHostname = sniHostname;
+        return this;
+    }
+
+    /**
+     * Build a new {@link ClientSslConfig}.
+     * @return a new {@link ClientSslConfig}.
+     */
+    public ClientSslConfig build() {
+        return new DefaultClientSslConfig(sslContext(), hostnameVerificationAlgorithm, peerHost, peerPort, sniHostname,
+                trustManager(), trustCertChainSupplier(), keyManager(), keyCertChainSupplier(), keySupplier(),
+                keyPassword(), sslProtocols(), alpnProtocols(), ciphers(), cipherSuiteFilter(), sessionCacheSize(),
+                sessionTimeout(), maxCertificateListBytes(), provider(), certificateCompressionAlgorithms(),
+                handshakeTimeout());
+    }
+
+    @Override
+    protected ClientSslConfigBuilder thisT() {
+        return this;
+    }
+
+    private static final class DefaultClientSslConfig extends AbstractSslConfig implements ClientSslConfig {
+        @Nullable
+        private final String hostnameVerificationAlgorithm;
+        @Nullable
+        private final String peerHost;
+        private final int peerPort;
+        @Nullable
+        private final String sniHostname;
+
+        DefaultClientSslConfig(@Nullable final SSLContext sslContext,
+                               @Nullable final String hostnameVerificationAlgorithm,
+                               @Nullable final String peerHost,
+                               final int peerPort,
+                               @Nullable final String sniHostname,
+                               @Nullable final TrustManagerFactory trustManagerFactory,
+                               @Nullable final Supplier<InputStream> trustCertChainSupplier,
+                               @Nullable final KeyManagerFactory keyManagerFactory,
+                               @Nullable final Supplier<InputStream> keyCertChainSupplier,
+                               @Nullable final Supplier<InputStream> keySupplier, @Nullable final String keyPassword,
+                               @Nullable final List<String> sslProtocols, @Nullable final List<String> alpnProtocols,
+                               @Nullable final List<String> ciphers, final CipherSuiteFilter cipherSuiteFilter,
+                               final long sessionCacheSize, final long sessionTimeout,
+                               final int maxCertificateListBytes, @Nullable final SslProvider provider,
+                               @Nullable final List<CertificateCompressionAlgorithm> certificateCompressionAlgorithms,
+                               final Duration handshakeTimeout) {
+            super(sslContext, trustManagerFactory, trustCertChainSupplier, keyManagerFactory, keyCertChainSupplier,
+                    keySupplier, keyPassword, sslProtocols, alpnProtocols, ciphers, cipherSuiteFilter, sessionCacheSize,
+                    sessionTimeout, maxCertificateListBytes, provider, certificateCompressionAlgorithms,
+                    handshakeTimeout);
+            this.hostnameVerificationAlgorithm = hostnameVerificationAlgorithm;
+            this.peerHost = peerHost;
+            this.peerPort = peerPort;
+            this.sniHostname = sniHostname;
+        }
+
+        @Nullable
+        @Override
+        public String hostnameVerificationAlgorithm() {
+            return hostnameVerificationAlgorithm;
+        }
+
+        @Nullable
+        @Override
+        public String peerHost() {
+            return peerHost;
+        }
+
+        @Override
+        public int peerPort() {
+            return peerPort;
+        }
+
+        @Nullable
+        @Override
+        public String sniHostname() {
+            return sniHostname;
+        }
+    }
+}

@@ -1,0 +1,250 @@
+/*
+ * Copyright © 2018-2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.concurrent.api.publisher;
+
+import io.servicetalk.concurrent.api.BiIntFunction;
+import io.servicetalk.concurrent.api.Completable;
+import io.servicetalk.concurrent.api.Executor;
+import io.servicetalk.concurrent.api.Publisher;
+import io.servicetalk.concurrent.api.TestCancellable;
+import io.servicetalk.concurrent.api.TestCompletable;
+import io.servicetalk.concurrent.api.TestPublisher;
+import io.servicetalk.concurrent.api.TestSubscription;
+import io.servicetalk.concurrent.internal.DeliberateException;
+import io.servicetalk.concurrent.test.internal.TestPublisherSubscriber;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static io.servicetalk.concurrent.api.Completable.failed;
+import static io.servicetalk.concurrent.api.Executors.newCachedThreadExecutor;
+import static io.servicetalk.concurrent.api.SourceAdapters.toSource;
+import static io.servicetalk.concurrent.internal.DeliberateException.DELIBERATE_EXCEPTION;
+import static java.time.Duration.ofMillis;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
+class RetryWhenTest {
+    private TestPublisher<Integer> source = new TestPublisher<>();
+    private TestPublisherSubscriber<Integer> subscriber = new TestPublisherSubscriber<>();
+    private BiIntFunction<Throwable, Completable> shouldRetry;
+    private TestCancellable retrySignalCancellable;
+    private TestCompletable retrySignal;
+    private Executor executor;
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setUp() {
+        shouldRetry = (BiIntFunction<Throwable, Completable>) mock(BiIntFunction.class);
+        retrySignal = new TestCompletable();
+        when(shouldRetry.apply(anyInt(), any())).thenAnswer(invocation -> {
+            retrySignalCancellable = new TestCancellable();
+            retrySignal = new TestCompletable.Builder().disableAutoOnSubscribe().build(sub -> {
+                sub.onSubscribe(retrySignalCancellable);
+                return sub;
+            });
+            return retrySignal;
+        });
+        toSource(source.retryWhen(shouldRetry)).subscribe(subscriber);
+    }
+
+    @AfterEach
+    void tearDown() throws Exception {
+        if (executor != null) {
+            executor.closeAsync().toFuture().get();
+        }
+    }
+
+    @Test
+    void publishOnWithRetry() {
+        // This is an indication of whether we are using the same offloader across different subscribes. If this works,
+        // then it does not really matter if we reuse offloaders or not. eg: if tomorrow we do not hold up a thread for
+        // the lifetime of the Subscriber, we can reuse the offloader.
+        executor = newCachedThreadExecutor();
+        Publisher<Object> source = Publisher.failed(DELIBERATE_EXCEPTION)
+                .publishOn(executor)
+                .retryWhen((count, t) ->
+                        count == 1 ?
+                                // If we complete the returned Completable synchronously, then the offloader will not
+                                // terminate before we add another entity in the next subscribe. So, we return an
+                                // asynchronously completed Completable.
+                                executor.submit(() -> { }) : failed(t));
+
+        Exception e = assertThrows(ExecutionException.class, () -> source.toFuture().get());
+        assertThat(e.getCause(), is(DELIBERATE_EXCEPTION));
+    }
+
+    @Test
+    void testComplete() {
+        subscriber.awaitSubscription().request(2);
+        source.onNext(1, 2);
+        source.onComplete();
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+
+        verifyNoInteractions(shouldRetry);
+    }
+
+    @Test
+    void testRetryCount() {
+        subscriber.awaitSubscription().request(2);
+        source.onNext(1, 2);
+        source.onError(DELIBERATE_EXCEPTION);
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        DeliberateException fatal = new DeliberateException();
+        retrySignal.onError(fatal); // stop retry
+        assertThat(subscriber.awaitOnError(), sameInstance(fatal));
+        verify(shouldRetry).apply(1, DELIBERATE_EXCEPTION);
+        verifyNoMoreInteractions(shouldRetry);
+    }
+
+    @Test
+    void testRequestAcrossRepeat() {
+        subscriber.awaitSubscription().request(3);
+        source.onNext(1, 2);
+        source.onError(DELIBERATE_EXCEPTION);
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        retrySignal.onComplete(); // trigger retry
+        verify(shouldRetry).apply(1, DELIBERATE_EXCEPTION);
+        assertTrue(source.isSubscribed());
+        source.onNext(3);
+        assertThat(subscriber.takeOnNext(), is(3));
+        assertThat(subscriber.pollTerminal(10, MILLISECONDS), is(nullValue()));
+    }
+
+    @Test
+    void testTwoError() {
+        subscriber.awaitSubscription().request(3);
+        source.onNext(1, 2);
+        source.onError(DELIBERATE_EXCEPTION);
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        assertThat(subscriber.pollTerminal(10, MILLISECONDS), is(nullValue()));
+        verify(shouldRetry).apply(1, DELIBERATE_EXCEPTION);
+        retrySignal.onComplete(); // trigger retry
+        assertTrue(source.isSubscribed());
+        source.onNext(3);
+        source.onError(DELIBERATE_EXCEPTION);
+        verify(shouldRetry).apply(2, DELIBERATE_EXCEPTION);
+        retrySignal.onComplete(); // trigger retry
+        source.onComplete();
+        assertThat(subscriber.takeOnNext(), is(3));
+        subscriber.awaitOnComplete();
+    }
+
+    @Test
+    void testMaxRetries() {
+        subscriber.awaitSubscription().request(3);
+        source.onNext(1, 2);
+        source.onError(DELIBERATE_EXCEPTION);
+        retrySignal.onComplete(); // trigger retry
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        assertThat(subscriber.pollTerminal(10, MILLISECONDS), is(nullValue()));
+        verify(shouldRetry).apply(1, DELIBERATE_EXCEPTION);
+        assertTrue(source.isSubscribed());
+        source.onError(DELIBERATE_EXCEPTION);
+        DeliberateException fatal = new DeliberateException();
+        retrySignal.awaitSubscribed();
+        retrySignal.onError(fatal); // stop retry
+        assertThat(subscriber.awaitOnError(), sameInstance(fatal));
+    }
+
+    @Test
+    void testCancelPostErrorButBeforeRetryStart() throws InterruptedException {
+        subscriber.awaitSubscription().request(2);
+        source.onNext(1, 2);
+        source.onError(DELIBERATE_EXCEPTION);
+        retrySignal.awaitSubscribed();
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        subscriber.awaitSubscription().cancel();
+        retrySignalCancellable.awaitCancelled();
+        verify(shouldRetry).apply(1, DELIBERATE_EXCEPTION);
+    }
+
+    @Test
+    void testCancelBeforeRetry() {
+        final TestSubscription subscription = new TestSubscription();
+        source.onSubscribe(subscription);
+        subscriber.awaitSubscription().request(2);
+        source.onNext(1, 2);
+        assertThat(subscriber.takeOnNext(2), contains(1, 2));
+        subscriber.awaitSubscription().cancel();
+        source.onComplete();
+        assertTrue(subscription.isCancelled());
+    }
+
+    @Test
+    void exceptionInTerminalCallsOnError() {
+        DeliberateException ex = new DeliberateException();
+        subscriber = new TestPublisherSubscriber<>();
+        source = new TestPublisher<>();
+        toSource(source.retryWhen((times, cause) -> {
+            throw ex;
+        })).subscribe(subscriber);
+        subscriber.awaitSubscription().request(1);
+        source.onError(DELIBERATE_EXCEPTION);
+        assertThat(subscriber.awaitOnError(), sameInstance(ex));
+        assertEquals(1, ex.getSuppressed().length);
+        assertSame(DELIBERATE_EXCEPTION, ex.getSuppressed()[0]);
+    }
+
+    @Test
+    void exceptionAfterRetryPreservesDemand() {
+        executor = newCachedThreadExecutor();
+        final Integer[] signals = {1, 2, 3};
+        final AtomicInteger onNextCount = new AtomicInteger();
+        subscriber = new TestPublisherSubscriber<>();
+        BiIntFunction<Throwable, Completable> retryFunc = (count, cause) ->
+                cause instanceof IllegalStateException && cause.getCause() == DELIBERATE_EXCEPTION ?
+                executor.timer(ofMillis(10)) : Completable.failed(cause);
+        toSource(Publisher.from(signals)
+                // First retry function will catch the error from onNext and propagate downstream to the second
+                // retry function.
+                .retryWhen(true, retryFunc)
+                .validateOutstandingDemand()
+                .map(t -> {
+                    if (onNextCount.getAndIncrement() == 0) {
+                        throw DELIBERATE_EXCEPTION;
+                    }
+                    return t;
+                })
+                // Second retry function will kick in and resubscribe generating new state.
+                .retryWhen(retryFunc)
+                .validateOutstandingDemand()
+        ).subscribe(subscriber);
+
+        subscriber.awaitSubscription().request(signals.length);
+        assertThat(subscriber.takeOnNext(signals.length), contains(signals));
+        subscriber.awaitOnComplete();
+    }
+}

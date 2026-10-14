@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright © 2018, 2022 Apple Inc. and the ServiceTalk project authors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<FindBugsFilter>
+  <!-- If we don't override equals in this way we won't be able to use equality comparison
+       with other ServiceTalk HttpHeaders. -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.ServiceTalkToNettyHttpHeaders"/>
+    <Method name="equals"/>
+    <Bug pattern="EQ_CHECK_FOR_OPERAND_NOT_COMPATIBLE_WITH_THIS"/>
+  </Match>
+
+  <!-- False-positive alerts, the invoked methods have side-effect -->
+  <Match>
+    <Or>
+      <Class name="io.servicetalk.http.netty.StreamingHttpRequestWithContext"/>
+      <Class name="io.servicetalk.http.netty.AbsoluteAddressHttpRequesterFilter"/>
+    </Or>
+    <Bug pattern="RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT"/>
+  </Match>
+
+  <!-- False positives or intentional -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ParentConnectionContext"/>
+    <Method name="sslSession"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ProtocolConfigBuilder$DefaultH2ProtocolConfig"/>
+    <Method name="initialSettings"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Or>
+      <Class name="io.servicetalk.http.netty.HttpClientConfig$1"/>
+      <Class name="io.servicetalk.http.netty.HttpServerConfig$DelegatingHttpServerSslConfig"/>
+    </Or>
+    <Method name="alpnProtocols"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.NettyHttpServer$ChangingFlushStrategy"/>
+    <Method name="apply"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ProtocolConfigBuilder"/>
+    <Method name="initialSettings"/>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.ProxyConnectChannelSingle$ProxyConnectHandler"/>
+    <Method name="channelRead"/>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+  </Match>
+
+  <Match>
+    <Class name="io.servicetalk.http.netty.AlpnChannelSingle$AlpnChannelHandler"/>
+    <Method name="handlerAdded"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.DefaultPartitionedHttpClientBuilder$NoopPartitionClient"/>
+    <Bug pattern="THROWS_METHOD_THROWS_RUNTIMEEXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ClientParentConnectionContext$DefaultH2ClientParentConnection"/>
+    <Or>
+      <Method name="lambda$null$0"/>
+      <Method name="lambda$childChannelActive$2"/>
+      <Method name="lambda$cleanupErrorBeforeOpen$0"/>
+      <Method name="lambda$cleanupErrorBeforeOpen$1"/>
+    </Or>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ClientParentConnectionContext$DefaultH2ClientParentConnection$1"/>
+    <Method name="lambda$handleSubscribe$1"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.H2ServerParentConnectionContext$1$1"/>
+    <Method name="initChannel"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.HeaderUtils$1"/>
+    <Method name="mapOnError"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_THROWABLE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.HttpObjectDecoder"/>
+    <Or>
+      <Method name="decodeLast"/>
+      <Method name="lambda$static$0"/>
+      <Method name="lambda$static$1"/>
+      <Method name="lambda$static$2"/>
+      <Method name="lambda$static$3"/>
+      <Method name="lambda$static$4"/>
+      <Method name="userEventTriggered"/>
+    </Or>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Or>
+      <Class name="io.servicetalk.http.netty.HttpRequestDecoder"/>
+      <Class name="io.servicetalk.http.netty.HttpResponseDecoder"/>
+    </Or>
+    <Method name="lambda$static$0"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.KeepAliveManager"/>
+    <Or>
+      <Method name="lambda$null$10"/>
+      <Method name="lambda$null$2"/>
+      <Method name="lambda$close0$10"/>
+      <Method name="lambda$close0$11"/>
+      <Method name="lambda$doCloseAsyncGracefully0$8"/>
+      <Method name="lambda$doShutdownOutput$12"/>
+      <Method name="lambda$gracefulCloseWriteSecondGoAway$9"/>
+      <Method name="lambda$new$2"/>
+      <Method name="lambda$new$4"/>
+      <Method name="lambda$trackActiveStream$5"/>
+    </Or>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.SniCompleteChannelSingle$SniCompleteChannelHandler"/>
+    <Method name="handlerAdded"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+
+  <!-- False positive: this is not a Singleton, the filter can be build multiple times by its Builder -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.RetryingHttpRequesterFilter"/>
+    <Method name="&lt;init&gt;"/>
+    <Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/>
+  </Match>
+
+  <!-- Builder pattern classes are designed for single-threaded use, no thread safety needed -->
+  <Match>
+    <Class name="io.servicetalk.http.netty.DefaultPartitionedHttpClientBuilder"/>
+    <Field name="serviceDiscoveryMaxQueueSize"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.DefaultSingleAddressHttpClientBuilder"/>
+    <Field name="addHostHeaderFallbackFilter"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.DefaultSingleAddressHttpClientBuilder"/>
+    <Field name="addIdleTimeoutConnectionFilter"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.http.netty.DefaultSingleAddressHttpClientBuilder$SdStatusCompletable"/>
+    <Field name="seenError"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+</FindBugsFilter>

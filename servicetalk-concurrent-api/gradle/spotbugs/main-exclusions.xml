@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright © 2018, 2021 Apple Inc. and the ServiceTalk project authors
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<FindBugsFilter>
+  <!-- Intentional name of Publisher same as reactivestreams Publisher -->
+  <Match>
+    <Or>
+      <Class name="io.servicetalk.concurrent.api.Publisher"/>
+      <Class name="io.servicetalk.concurrent.api.Single"/>
+      <Class name="io.servicetalk.concurrent.api.Completable"/>
+      <Class name="io.servicetalk.concurrent.api.Executor"/>
+      <Class name="io.servicetalk.concurrent.api.AsyncCloseable"/>
+    </Or>
+    <Bug pattern="NM_SAME_SIMPLE_NAME_AS_INTERFACE"/>
+  </Match>
+
+  <Match>
+    <Or>
+      <Class name="io.servicetalk.concurrent.api.ContextPreservingCompletableFuture"/>
+      <Class name="io.servicetalk.concurrent.api.CancelPropagatingCompletableFuture"/>
+      <Class name="io.servicetalk.concurrent.api.RepeatWhenSingle$RepeatSubscription$RepeatSubscriber"/>
+    </Or>
+    <Or>
+      <Method name="getNow"/>
+      <Method name="obtrudeValue"/>
+      <Method name="onSuccess"/>
+    </Or>
+    <Bug pattern="NP_PARAMETER_MUST_BE_NONNULL_BUT_MARKED_AS_NULLABLE"/>
+  </Match>
+
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.MulticastPublisher$State"/>
+    <Field name="subscribers"/>
+    <Bug pattern="VO_VOLATILE_REFERENCE_TO_ARRAY"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.CacheSingle$State"/>
+    <Field name="subscribers"/>
+    <Bug pattern="VO_VOLATILE_REFERENCE_TO_ARRAY"/>
+  </Match>
+
+  <!-- In method io.servicetalk.concurrent.api.AsyncContext.<static initializer for AsyncContext>() -->
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.AsyncContext"/>
+    <Bug pattern="NP_NONNULL_FIELD_NOT_INITIALIZED_IN_CONSTRUCTOR"/>
+  </Match>
+
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.AutoCloseables"/>
+    <Method name="closeGracefully"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.CompositeCloseable"/>
+    <Method name="close"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.ContextPreservingCallable"/>
+    <Method name="call"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.ContextPreservingCallable"/>
+    <Method name="slowPath"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.Completable"/>
+    <Method name="lambda$fromRunnable$4"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_BASIC_EXCEPTION"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.ScanWithMapper"/>
+    <Method name="mapOnError"/>
+    <Bug pattern="THROWS_METHOD_THROWS_CLAUSE_THROWABLE"/>
+  </Match>
+
+  <!-- Reactive Streams protocol guarantees sequential access, these fields are protected by protocol semantics -->
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.FirstAndTailToPackedSingle$SplicingSubscriber"/>
+    <Or>
+      <Field name="onSubscribeSent"/>
+      <Field name="firstElementSeenInOnNext"/>
+    </Or>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.MulticastLeafSubscriber"/>
+    <Field name="cancelled"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.PublisherFlatMapMerge$FlatMapSubscriber"/>
+    <Field name="targetTerminated"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.PublisherFlatMapMerge$FlatMapSubscriber$FlatMapPublisherSubscriber"/>
+    <Field name="signalsQueued"/>
+    <Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.SequentialSubscription"/>
+    <Field name="sourceEmitted"/>
+    <Bug pattern="AT_NONATOMIC_OPERATIONS_ON_SHARED_VARIABLE"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.PublisherFlatMapMerge$FlatMapSubscriber"/>
+    <Method name="onError"/>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+  </Match>
+  <!-- ContextMap propagation -->
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.DefaultAsyncContextProvider$CapturedContextImpl"/>
+    <Method name="captured"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+  <Match>
+    <Class name="io.servicetalk.concurrent.api.DefaultThreadFactory$AsyncContextHolderThread"/>
+    <Method name="context"/>
+    <Bug pattern="EI_EXPOSE_REP"/>
+  </Match>
+</FindBugsFilter>

@@ -1,0 +1,36 @@
+/*
+ * Copyright © 2019 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+
+def actualJerseyVersion = "${jerseyVersion}"
+def actualJaxRsVersion = "${jaxRsVersion}"
+
+// Dependencies must remain consistent between servicetalk-http-router-jerseyX-internal modules
+dependencies {
+  api project(":servicetalk-buffer-api")
+  api project(":servicetalk-concurrent")
+  api project(":servicetalk-concurrent-api")
+  api project(":servicetalk-concurrent-api-internal")
+  api project(":servicetalk-http-api")
+  api "jakarta.ws.rs:jakarta.ws.rs-api:$actualJaxRsVersion"
+
+  implementation platform("org.glassfish.jersey:jersey-bom:$actualJerseyVersion")
+  implementation project(":servicetalk-annotations")
+  implementation project(":servicetalk-concurrent-internal")
+  implementation project(":servicetalk-transport-api")
+  implementation "org.glassfish.jersey.core:jersey-common"
+}

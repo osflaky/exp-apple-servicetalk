@@ -1,0 +1,151 @@
+/*
+ * Copyright © 2019, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+buildscript {
+  dependencies {
+    classpath "com.google.protobuf:protobuf-gradle-plugin:$protobufGradlePluginVersion"
+  }
+}
+
+apply plugin: "io.servicetalk.servicetalk-gradle-plugin-internal-library"
+apply plugin: "com.google.protobuf"
+
+afterEvaluate {
+  if (tasks.findByName("projectHealth")) {
+    dependencyAnalysis {
+      issues {
+        // False positives for testImplementation
+        onUnusedDependencies {
+          exclude(":servicetalk-http-utils")
+        }
+        // This is a transitive dependency of "io.grpc:grpc-stub" and we don't want to manage it manually because
+        // it's only used by testImplementation scope.
+        onUsedTransitiveDependencies {
+          exclude("com.google.guava:guava")
+        }
+      }
+    }
+  }
+}
+
+dependencies {
+  api project(":servicetalk-client-api")
+  api project(":servicetalk-grpc-api")
+  api project(":servicetalk-http-netty")
+  api project(":servicetalk-transport-api")
+
+  compileOnly project(":servicetalk-http-utils") // only for javadoc references
+
+  implementation project(":servicetalk-annotations")
+  implementation project(":servicetalk-buffer-api")
+  implementation project(":servicetalk-concurrent-api")
+  implementation project(":servicetalk-concurrent-internal")
+  implementation project(":servicetalk-context-api")
+  implementation project(":servicetalk-grpc-internal")
+  implementation project(":servicetalk-grpc-utils")
+  implementation project(":servicetalk-http-api")
+  implementation project(":servicetalk-transport-netty-internal")
+  implementation project(":servicetalk-utils-internal")
+  implementation "org.slf4j:slf4j-api:$slf4jVersion"
+
+  testImplementation enforcedPlatform("com.google.protobuf:protobuf-bom:$protobufVersion")
+  testImplementation enforcedPlatform("io.grpc:grpc-bom:$grpcVersion")
+  testImplementation enforcedPlatform("io.netty:netty-bom:$nettyVersion")
+  testImplementation enforcedPlatform("org.junit:junit-bom:$junit5Version")
+  testImplementation testFixtures(project(":servicetalk-concurrent-api"))
+  testImplementation testFixtures(project(":servicetalk-concurrent-internal"))
+  testImplementation testFixtures(project(":servicetalk-transport-netty-internal"))
+  testImplementation testFixtures(project(":servicetalk-buffer-api"))
+  testImplementation testFixtures(project(":servicetalk-http-netty"))
+  testImplementation project(":servicetalk-buffer-netty")
+  testImplementation project(":servicetalk-concurrent")
+  testImplementation project(":servicetalk-concurrent-api-internal")
+  testImplementation project(":servicetalk-concurrent-test-internal")
+  testImplementation project(":servicetalk-data-protobuf")
+  testImplementation project(":servicetalk-encoding-api")
+  testImplementation project(":servicetalk-encoding-netty")
+  testImplementation project(":servicetalk-grpc-protobuf")
+  testImplementation project(":servicetalk-grpc-protoc")
+  testImplementation project(":servicetalk-http-utils")
+  testImplementation project(":servicetalk-logging-api")
+  testImplementation project(":servicetalk-router-api")
+  testImplementation project(":servicetalk-router-utils-internal")
+  testImplementation project(":servicetalk-serializer-api")
+  testImplementation project(":servicetalk-serializer-utils")
+  testImplementation project(":servicetalk-test-resources")
+  testImplementation "com.google.api.grpc:proto-google-common-protos:$protoGoogleCommonProtosVersion"
+  testImplementation "com.google.protobuf:protobuf-java"
+  testImplementation "io.grpc:grpc-api"
+  testImplementation("io.grpc:grpc-netty") {
+    exclude group: "io.netty"
+  }
+  testImplementation "io.grpc:grpc-protobuf"
+  testImplementation "io.grpc:grpc-stub"
+  testImplementation "io.netty:netty-common"
+  testImplementation "io.netty:netty-handler"
+  testImplementation "io.netty:netty-transport"
+  testImplementation "org.junit.jupiter:junit-jupiter-api"
+  testImplementation "org.junit.jupiter:junit-jupiter-params"
+  testImplementation "org.hamcrest:hamcrest:$hamcrestVersion"
+  testImplementation "org.mockito:mockito-core:$mockitoCoreVersion"
+  testImplementation "org.mockito:mockito-junit-jupiter:$mockitoCoreVersion"
+  // Required for generated protobuf code when compiling with JDK 9+ (javax.annotation.Generated)
+  testCompileOnly "javax.annotation:javax.annotation-api:$javaxAnnotationApiVersion"
+}
+
+protobuf {
+  protoc {
+    artifact = "com.google.protobuf:protoc:$protobufVersion"
+  }
+
+  //// REMOVE if outside of ServiceTalk gradle project
+  def pluginJar = file("${project.rootProject.rootDir}/servicetalk-grpc-protoc/build" +
+          "/buildExecutable/servicetalk-grpc-protoc-${project.version}-all.jar")
+  //// REMOVE if outside of ServiceTalk gradle project
+
+  plugins {
+    grpc {
+      artifact = "io.grpc:protoc-gen-grpc-java:$grpcVersion"
+    }
+    servicetalk_grpc {
+      // use gradle project local grpc-protoc dependency
+      path = pluginJar.path
+    }
+  }
+  generateProtoTasks {
+    all().each { task ->
+      io.servicetalk.gradle.plugin.internal.ProjectUtils.addGeneratedProtoDependsOn(project, task, true)
+      if (task.isTest) {
+        task.dependsOn(":servicetalk-grpc-protoc:buildExecutable") // use gradle project local grpc-protoc dependency
+
+        task.inputs
+                .file(pluginJar)
+                .withNormalizer(ClasspathNormalizer)
+                .withPropertyName("servicetalkPluginJar")
+                .withPathSensitivity(PathSensitivity.RELATIVE)
+      }
+
+      task.plugins {
+        grpc {}
+        servicetalk_grpc {
+          outputSubDir = "java"
+          // this will eventually become the default behavior
+          option "defaultServiceMethods=true"
+        }
+      }
+    }
+  }
+}

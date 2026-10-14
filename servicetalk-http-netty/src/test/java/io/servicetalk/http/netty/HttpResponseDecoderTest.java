@@ -1,0 +1,539 @@
+/*
+ * Copyright © 2018, 2020, 2021 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Copyright 2013 The Netty Project
+ *
+ * The Netty Project licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+package io.servicetalk.http.netty;
+
+import io.servicetalk.buffer.api.Buffer;
+import io.servicetalk.http.api.DefaultHttpHeadersFactory;
+import io.servicetalk.http.api.HttpHeaders;
+import io.servicetalk.http.api.HttpMetaData;
+import io.servicetalk.http.api.HttpProtocolVersion;
+import io.servicetalk.http.api.HttpRequestMethod;
+import io.servicetalk.http.api.HttpResponseMetaData;
+import io.servicetalk.http.api.HttpResponseStatus;
+import io.servicetalk.http.netty.HttpResponseDecoder.Signal;
+import io.servicetalk.transport.netty.internal.CloseHandler;
+import io.servicetalk.utils.internal.IllegalCharacterException;
+
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.DecoderException;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.Queue;
+
+import static io.netty.buffer.Unpooled.wrappedBuffer;
+import static io.servicetalk.buffer.netty.BufferAllocators.DEFAULT_ALLOCATOR;
+import static io.servicetalk.buffer.netty.BufferUtils.getByteBufAllocator;
+import static io.servicetalk.http.api.HeaderUtils.isTransferEncodingChunked;
+import static io.servicetalk.http.api.HttpHeaderNames.CONTENT_LENGTH;
+import static io.servicetalk.http.api.HttpHeaderNames.HOST;
+import static io.servicetalk.http.api.HttpHeaderNames.TRANSFER_ENCODING;
+import static io.servicetalk.http.api.HttpHeaderValues.CHUNKED;
+import static io.servicetalk.http.api.HttpProtocolVersion.HTTP_1_1;
+import static io.servicetalk.http.api.HttpRequestMethod.CONNECT;
+import static io.servicetalk.http.api.HttpResponseStatus.BAD_REQUEST;
+import static io.servicetalk.http.api.HttpResponseStatus.NO_CONTENT;
+import static io.servicetalk.http.api.HttpResponseStatus.OK;
+import static io.servicetalk.http.netty.H1ProtocolConfigBuilder.DEFAULT_MAX_HEADER_FIELD_LENGTH;
+import static io.servicetalk.http.netty.H1ProtocolConfigBuilder.DEFAULT_MAX_START_LINE_LENGTH;
+import static io.servicetalk.http.netty.H1ProtocolConfigBuilder.DEFAULT_MAX_TOTAL_HEADER_FIELDS_LENGTH;
+import static io.servicetalk.http.netty.HttpResponseDecoder.Signal.REQUEST_SIGNAL;
+import static io.servicetalk.transport.netty.internal.CloseHandler.UNSUPPORTED_PROTOCOL_CLOSE_HANDLER;
+import static java.lang.Integer.toHexString;
+import static java.nio.charset.StandardCharsets.US_ASCII;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.empty;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.startsWith;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+class HttpResponseDecoderTest extends HttpObjectDecoderTest {
+
+    private static final class PollLikePeakArrayDeque<T> extends ArrayDeque<T> {
+        private static final long serialVersionUID = -8160337336374186819L;
+
+        @Override
+        public T poll() {
+            return peek();  // Prevent taking an element out of the queue to allow reuse for multiple tests
+        }
+    }
+
+    private final Queue<HttpRequestMethod> methodQueue = new ArrayDeque<>();
+
+    private final EmbeddedChannel channel = newChannel(false);
+    private final EmbeddedChannel channelSpecException = newChannel(true);
+
+    private EmbeddedChannel newChannel(boolean allowLFWithoutCR) {
+        final Deque<Signal> signalsQueue = new PollLikePeakArrayDeque<>();
+        signalsQueue.offer(REQUEST_SIGNAL);
+        return new EmbeddedChannel(new HttpResponseDecoder(methodQueue, signalsQueue,
+                getByteBufAllocator(DEFAULT_ALLOCATOR), DefaultHttpHeadersFactory.INSTANCE,
+                DEFAULT_MAX_START_LINE_LENGTH, DEFAULT_MAX_HEADER_FIELD_LENGTH, DEFAULT_MAX_TOTAL_HEADER_FIELDS_LENGTH,
+                false, allowLFWithoutCR, UNSUPPORTED_PROTOCOL_CLOSE_HANDLER));
+    }
+
+    @Override
+    EmbeddedChannel channel() {
+        return channel;
+    }
+
+    @Override
+    EmbeddedChannel channelSpecException() {
+        return channelSpecException;
+    }
+
+    @Override
+    boolean isDecodingRequest() {
+        return false;
+    }
+
+    @Override
+    String startLine() {
+        return "HTTP/1.1 204 No Content";
+    }
+
+    @Override
+    HttpMetaData assertStartLine(EmbeddedChannel channel) {
+        return assertResponseLine(HTTP_1_1, NO_CONTENT, channel);
+    }
+
+    @Override
+    String startLineForContent() {
+        return "HTTP/1.1 200 OK";
+    }
+
+    @Override
+    HttpMetaData assertStartLineForContent(final EmbeddedChannel channel) {
+        return assertResponseLine(HTTP_1_1, OK, channel);
+    }
+
+    @Override
+    String startLine(final String extra) {
+        return "HTTP/1.1 204 No Content " + extra;
+    }
+
+    @Override
+    EmbeddedChannel channelWithMaxTotalHeaderFieldsLength(int maxTotalHeaderFieldsLength) {
+        final Deque<Signal> signalsQueue = new PollLikePeakArrayDeque<>();
+        signalsQueue.offer(REQUEST_SIGNAL);
+        return new EmbeddedChannel(new HttpResponseDecoder(methodQueue, signalsQueue,
+                getByteBufAllocator(DEFAULT_ALLOCATOR),
+                DefaultHttpHeadersFactory.INSTANCE,
+                DEFAULT_MAX_START_LINE_LENGTH,
+                DEFAULT_MAX_HEADER_FIELD_LENGTH,
+                maxTotalHeaderFieldsLength,
+                false,  // allowPrematureClosureBeforePayloadBody
+                false,  // allowLFWithoutCR
+                UNSUPPORTED_PROTOCOL_CLOSE_HANDLER));
+    }
+
+    @Override
+    EmbeddedChannel channelWithCloseHandler(CloseHandler closeHandler) {
+        final Deque<Signal> signalsQueue = new PollLikePeakArrayDeque<>();
+        signalsQueue.offer(REQUEST_SIGNAL);
+        return new EmbeddedChannel(new HttpResponseDecoder(methodQueue, signalsQueue,
+                getByteBufAllocator(DEFAULT_ALLOCATOR), DefaultHttpHeadersFactory.INSTANCE,
+                DEFAULT_MAX_START_LINE_LENGTH, DEFAULT_MAX_HEADER_FIELD_LENGTH, DEFAULT_MAX_TOTAL_HEADER_FIELDS_LENGTH,
+                false, false, closeHandler));
+    }
+
+    @Test
+    void illegalPrefaceCharacter() {
+        assertDecoderExceptionWithCause(" HTTP/1.1 200 OK" + "\r\n", "Invalid preface character");
+    }
+
+    @Test
+    void tlsRecordOnPlaintextConnection() {
+        // technically this should never happen on a response, but test has been added for parity with the
+        // request decoder test.
+        byte[] tlsRecord = {0x16, 0x03, 0x01, 0x00, 0x05};
+        DecoderException e = assertThrows(DecoderException.class,
+                () -> channel().writeInbound(wrappedBuffer(tlsRecord)));
+        assertThat(e.getMessage(), startsWith("Received a TLS/SSL record on a non-TLS HTTP connection"));
+        assertThat(e.getCause(), is(instanceOf(IllegalCharacterException.class)));
+        assertThat(channel().inboundMessages(), is(empty()));
+    }
+
+    @Test
+    void noVersion() {
+        assertDecoderException("200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void noStatusCode() {
+        assertDecoderException("HTTP/1.1 OK" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void invalidStartLineOrder() {
+        assertDecoderException("HTTP/1.1 OK 200" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void onlyVersion() {
+        assertDecoderException("HTTP/1.1" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void invalidVersionPrefixOnly() {
+        assertDecoderExceptionWithCause("HttP", "Invalid start-line");
+    }
+
+    @Test
+    void invalidVersionPrefix() {
+        assertDecoderException("HttP/1.1 200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void invalidVersionSlash() {
+        assertDecoderException("HTTP|1.1 200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void invalidVersionMajor() {
+        assertDecoderException("HTTP/5.1 200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void invalidVersionDelimiter() {
+        assertDecoderException("HTTP/1,1 200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void invalidVersionMinorNotNumber() {
+        assertDecoderExceptionWithCause("HTTP/1.z 200 OK" + "\r\n", "Invalid HTTP version");
+    }
+
+    @Test
+    void twoWsBetweenVersionAndStatusCode() {
+        assertDecoderException("HTTP/1.1  200 OK" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void invalidStatusCodeLessThan3digitInteger() {
+        assertDecoderException("HTTP/1.1 20 OK" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void invalidStatusCodeMoreThan3digitInteger() {
+        assertDecoderException("HTTP/1.1 2000 OK" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void invalidStatusCodeNonInteger() {
+        assertDecoderExceptionWithCause("HTTP/1.1 20K OK" + "\r\n",
+                "Invalid start-line: HTTP status-code must contain only 3 digits");
+    }
+
+    @Test
+    void invalidStatusCodeWithControlCharacter() {
+        assertDecoderExceptionWithCause("HTTP/1.1 20\0 OK" + "\r\n",
+                "Invalid start-line: HTTP status-code must contain only 3 digits");
+    }
+
+    @Test
+    void invalidReasonPhraseWithControlCharacter() {
+        assertDecoderExceptionWithCause("HTTP/1.1 200 O\fK" + "\r\n", "Invalid start-line");
+    }
+
+    @Test
+    void validStartLineWithCustomHttpVersion() {
+        writeMsg("HTTP/1.9 204 No Content" + "\r\n" + "\r\n");
+        assertResponseLine(HttpProtocolVersion.of(1, 9), NO_CONTENT);
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @ParameterizedTest(name = "statusCode={0}, crlf={1}")
+    @CsvSource({"200,true", "200,false", "299,true", "299,false"})
+    void noSpAfterStatusCodeNoReasonPhrase(int statusCode, boolean crlf) {
+        HttpResponseStatus status = HttpResponseStatus.of(statusCode, "");
+        EmbeddedChannel channel = channel(crlf);
+        String br = br(crlf);
+        writeMsg("HTTP/1.1 " + status.code() /* no SP */ + br + br, channel);
+        assertResponseLine(HTTP_1_1, status, channel);
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @ParameterizedTest(name = "{displayName} [{index}] reasonPhrase={0}")
+    @ValueSource(strings = {
+            "", "   ", "   No Content", "No Content   ", "   No Content   ", "No\tContent", "Ñó Cóñtêñt"
+    })
+    void testReasonPhrase(final String reasonPhrase) {
+        writeMsg("HTTP/1.1 204 " + reasonPhrase + "\r\n" + "\r\n");
+        assertResponseLine(HTTP_1_1, HttpResponseStatus.of(204, reasonPhrase));
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void chunkedWithTrailersSplitOnNetwork() {
+        int chunkSize = 128;
+        List<String> beforeContent = new ArrayList<>();
+        beforeContent.add("HTTP/");
+        beforeContent.add("1.1 ");
+        beforeContent.add("200 OK\r");
+        beforeContent.add("\nC");
+        beforeContent.add("onnection");
+        beforeContent.add(":");
+        beforeContent.add(" keep-alive\r");
+        beforeContent.add("\n");
+        beforeContent.add("\n");
+        beforeContent.add("Host: ");
+        beforeContent.add("service");
+        beforeContent.add("talk.io");
+        beforeContent.add("\r\n");
+        beforeContent.add("Transfer-Encoding: chunked\r\n");
+        beforeContent.add("\r");
+        beforeContent.add("\n");
+        beforeContent.add(toHexString(chunkSize));
+        beforeContent.add(";");
+        beforeContent.add("\r");
+        beforeContent.add("\n");
+        List<String> afterContent = new ArrayList<>();
+        afterContent.add("\r");
+        afterContent.add("\n");
+        afterContent.add("0");
+        afterContent.add("\r");
+        afterContent.add("\n");
+        afterContent.add("TrailerStatus");
+        afterContent.add(": good");
+        afterContent.add("\r");
+        afterContent.add("\n");
+        afterContent.add("\r");
+        afterContent.add("\n");
+        for (String msg : beforeContent) {
+            channel.writeInbound(fromAscii(msg));
+        }
+        // Write single chunk on two writes
+        writeContent(chunkSize / 2);
+        writeContent(chunkSize / 2);
+        for (String msg : afterContent) {
+            channel.writeInbound(fromAscii(msg));
+        }
+        validateWithContent(-chunkSize, true);
+    }
+
+    @Test
+    void variableEmptyContent() {
+        writeMsg("HTTP/1.1 200 OK" + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Connection: keep-alive" + "\r\n" + "\r\n");
+
+        // For a response, the variable length content is considered "complete" when the channel is closed.
+        channel.close();
+
+        HttpMetaData metaData = assertStartLineForContent();
+        assertStandardHeaders(metaData.headers());
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void variableWithContent() {
+        int contentLength = 128;
+        writeMsg("HTTP/1.1 200 OK" + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Connection: keep-alive" + "\r\n" + "\r\n");
+        writeContent(contentLength);
+
+        // For a response, the variable length content is considered "complete" when the channel is closed.
+        channel.close();
+
+        HttpMetaData metaData = assertStartLineForContent();
+        assertStandardHeaders(metaData.headers());
+        assertThat(metaData.headers().get(CONTENT_LENGTH), is(nullValue()));
+        Buffer chunk = channel().readInbound();
+        assertThat(chunk.readableBytes(), is(contentLength));
+        assertEmptyTrailers(channel());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void variableWithChunkedContentAndTrailers() {
+        int chunkSize = 128;
+        writeMsg("HTTP/1.1 200 OK" + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Connection: keep-alive" + "\r\n" + "\r\n");
+
+        // Note that trailers are only allowed when chunked encoding is used. So the trailers in this case are
+        // considered part of the payload (even the \r\n), and the response is terminated when the channel is closed.
+        // https://tools.ietf.org/html/rfc7230.html#section-4.1
+        writeChunk(chunkSize);
+        writeChunk(0);
+        String trailersPart = "TrailerStatus: good" + "\r\n";
+        writeMsg(trailersPart);
+        writeMsg("\r\n");
+
+        // For a response, the variable length content is considered "complete" when the channel is closed.
+        channel.close();
+
+        // In this case, content is parsed without taking "chunked" encoding into account.
+        int expectedContentLength = 2 /* chunk-size */ + 2 /* CRLF */ + chunkSize + 2 /* CRLF */ + 3 /* last-chunk */ +
+                trailersPart.length() + 2 /* CRLF */;
+        HttpMetaData metaData = assertStartLineForContent();
+        assertStandardHeaders(metaData.headers());
+        assertThat(isTransferEncodingChunked(metaData.headers()), is(false));
+        HttpHeaders trailers = assertPayloadSize(expectedContentLength);
+        assertThat("Trailers are not empty", trailers, nullValue());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    private HttpResponseMetaData assertResponseLine(HttpProtocolVersion expectedVersion,
+                                                    HttpResponseStatus expectedStatus) {
+        return assertResponseLine(expectedVersion, expectedStatus, channel());
+    }
+
+    private static HttpResponseMetaData assertResponseLine(HttpProtocolVersion expectedVersion,
+                                                           HttpResponseStatus expectedStatus, EmbeddedChannel channel) {
+        HttpResponseMetaData response = channel.readInbound();
+        assertThat(response.version(), equalTo(expectedVersion));
+        assertThat(response.status().code(), is(expectedStatus.code()));
+        assertThat(response.status().reasonPhrase(), equalTo(expectedStatus.reasonPhrase()));
+        return response;
+    }
+
+    @Test
+    void smuggleBeforeNonZeroContentLengthHeader() {
+        int contentLength = 128;
+        writeMsg(startLineForContent() + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                // If a Transfer-Encoding header field is present in a response and
+                // the chunked transfer coding is not the final encoding, the
+                // message body length is determined by reading the connection until
+                // it is closed by the server [1].
+                // [1] https://tools.ietf.org/html/rfc7230#section-3.3.3
+                "Smuggled: " + startLine() + "\r\n\r\n" +
+                "Content-Length: " + contentLength + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+
+        HttpMetaData metaData = assertStartLineForContent();
+        assertSingleHeaderValue(metaData.headers(), HOST, "servicetalk.io");
+        assertSingleHeaderValue(metaData.headers(), "Smuggled", startLine());
+        Buffer buffer = channel().readInbound();
+        assertThat(buffer.toString(US_ASCII), is("Content-Length: " + contentLength +
+                "\r\nConnection: keep-alive\r\n\r\n"));
+        channel().close();
+        assertEmptyTrailers(channel());
+        assertFalse(channel().finishAndReleaseAll());
+    }
+
+    @Test
+    void smuggleBeforeTransferEncodingHeader() {
+        writeMsg(startLineForContent() + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                // Otherwise, this is a response message without a declared message
+                // body length, so the message body length is determined by the
+                // number of octets received prior to the server closing the
+                // connection [1].
+                // [1] https://tools.ietf.org/html/rfc7230#section-3.3.3
+                "Smuggled: " + startLine() + "\r\n\r\n" +
+                TRANSFER_ENCODING + ": " + CHUNKED + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+
+        HttpMetaData metaData = assertStartLineForContent();
+        assertSingleHeaderValue(metaData.headers(), HOST, "servicetalk.io");
+        assertSingleHeaderValue(metaData.headers(), "Smuggled", startLine());
+        Buffer buffer = channel().readInbound();
+        assertThat(buffer.toString(US_ASCII), is(TRANSFER_ENCODING + ": " + CHUNKED +
+                "\r\nConnection: keep-alive\r\n\r\n"));
+        channel().close();
+        assertEmptyTrailers(channel());
+        assertFalse(channel().finishAndReleaseAll());
+    }
+
+    @Test
+    void successfulResponseToConnectRequest() {
+        methodQueue.add(CONNECT);
+        writeMsg(startLineForContent() + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+
+        assertStartLineForContent();
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void successfulResponseToConnectRequestWithPayloadBodyFails() {
+        methodQueue.add(CONNECT);
+        String content = "content";
+        writeMsg(startLineForContent() + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Content-Length: " + content.length() + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+
+        // Verify response meta-data received and parsed as a full response:
+        assertStartLineForContent();
+        assertEmptyTrailers(channel);
+
+        // Try to write response content:
+        assertDecoderException(content, "Invalid start-line");
+    }
+
+    @Test
+    void errorResponseToConnectRequestWithEmptyContent() {
+        methodQueue.add(CONNECT);
+        writeMsg("HTTP/1.1 400 Bad Request" + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Content-Length: 0" + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+        assertResponseLine(HTTP_1_1, BAD_REQUEST);
+        assertEmptyTrailers(channel);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void errorResponseToConnectRequestWithContent() {
+        methodQueue.add(CONNECT);
+        int contentLength = 128;
+        writeMsg("HTTP/1.1 400 Bad Request" + "\r\n" +
+                "Host: servicetalk.io" + "\r\n" +
+                "Content-Length: " + contentLength + "\r\n" +
+                "Connection: keep-alive" + "\r\n\r\n");
+        writeContent(contentLength);
+        assertResponseLine(HTTP_1_1, BAD_REQUEST);
+        HttpHeaders trailers = assertPayloadSize(contentLength);
+        assertThat("Trailers are not empty", trailers, nullValue());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+}

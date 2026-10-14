@@ -1,0 +1,131 @@
+/*
+ * Copyright © 2024 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.servicetalk.loadbalancer;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Predicate;
+
+import static io.servicetalk.loadbalancer.ConnectionSelectorHelpers.FAIL_IF_CONSULTED;
+import static io.servicetalk.loadbalancer.ConnectionSelectorHelpers.makeConnections;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+class CorePoolConnectionSelectorTest {
+
+    private ConnectionSelector<TestLoadBalancedConnection> strategy(int corePoolSize, boolean forceCorePool) {
+        return CorePoolConnectionSelector.<TestLoadBalancedConnection>factory(corePoolSize, forceCorePool)
+                .buildConnectionSelector("resource");
+    }
+
+    @Test
+    void selectsHosts() {
+        for (int i = 1; i < 10; i++) {
+            List<TestLoadBalancedConnection> connections = makeConnections(i);
+            ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(5, false);
+            assertNotNull(strategy.select(connections, c -> true, () -> true));
+        }
+    }
+
+    @Test
+    void selectsFromEmptyPool() {
+        assertNull(strategy(5, false).select(makeConnections(0), c -> true, () -> true));
+        assertNull(strategy(5, true).select(makeConnections(0), c -> true, () -> true));
+    }
+
+    @Test
+    void zeroCorePoolSelectsInOrder() {
+        List<TestLoadBalancedConnection> connections = makeConnections(5);
+        for (boolean forceCorePool : new boolean[] {false, true}) {
+            ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(0, forceCorePool);
+            assertEquals(connections.get(0), strategy.select(connections, c -> true, () -> true));
+            assertEquals(connections.get(3),
+                    strategy.select(connections, c -> connections.indexOf(c) >= 3, () -> true));
+            assertNull(strategy.select(connections, c -> false, () -> true));
+        }
+    }
+
+    @Test
+    void prefersCorePool() {
+        List<TestLoadBalancedConnection> connections = makeConnections(10);
+        ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(5, false);
+        Set<TestLoadBalancedConnection> selected = new HashSet<>();
+        for (int i = 0; i < 100; i++) {
+            selected.add(strategy.select(connections, c -> true, () -> true));
+        }
+        // Commonly we should have more than one element in strategy, although we can expect it to contain a single
+        // element with a probability of 0.2^99 or ~6e-70.
+        assertThat(selected, hasSize(greaterThan(1)));
+
+        // We should not have selected any of the non-core pool connections.
+        for (int i = 5; i < 10; i++) {
+            assertThat(selected, not(hasItem(connections.get(i))));
+        }
+    }
+
+    @Test
+    void spillsIntoOverflow() {
+        List<TestLoadBalancedConnection> connections = makeConnections(6);
+        ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(5, false);
+        Set<TestLoadBalancedConnection> corePoolCxns = new HashSet<>();
+        for (int i = 0; i < 5; i++) {
+            corePoolCxns.add(connections.get(i));
+        }
+        Predicate<TestLoadBalancedConnection> selector = (TestLoadBalancedConnection c) -> !corePoolCxns.contains(c);
+        assertEquals(connections.get(5), strategy.select(connections, selector, () -> true));
+    }
+
+    @Test
+    void forcingCorePoolWillEnsureCorePoolGrows() {
+        List<TestLoadBalancedConnection> connections = makeConnections(5);
+        for (int i = 1; i < 10; i++) {
+            ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(i, true);
+            if (i <= 5) {
+                // core pool large enough
+                assertNotNull(strategy.select(connections, c -> true, () -> true));
+            } else {
+                // We should never select a connection because the core pool isn't big enough.
+                assertNull(strategy.select(connections, c -> true, () -> true));
+            }
+        }
+    }
+
+    @Test
+    void forcingCorePoolDoesntApplyWhenThePoolCantGrow() {
+        List<TestLoadBalancedConnection> connections = makeConnections(5);
+        for (int i = 1; i < 10; i++) {
+            ConnectionSelector<TestLoadBalancedConnection> strategy = strategy(i, true);
+            assertNotNull(strategy.select(connections, c -> true, () -> false));
+        }
+    }
+
+    @Test
+    void doesntConsultCanGrowPoolWhenItCantChangeTheOutcome() {
+        List<TestLoadBalancedConnection> connections = makeConnections(5);
+        assertNotNull(strategy(5, false).select(connections, c -> true, FAIL_IF_CONSULTED));
+        // Core pool already full, so there is nothing to force.
+        assertNotNull(strategy(5, true).select(connections, c -> true, FAIL_IF_CONSULTED));
+    }
+}

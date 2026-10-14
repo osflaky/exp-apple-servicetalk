@@ -1,0 +1,41 @@
+/*
+ * Copyright © 2019 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+if (!repositories) {
+  repositories {
+    gradlePluginPortal()
+  }
+} else {
+  // We need to manually load ProjectUtils in order to use it at this early point of the script evaluation
+  File sourceFile = file("../servicetalk-gradle-plugin-internal/src/main/groovy/io/servicetalk/gradle/plugin/internal" +
+      "/ProjectUtils.groovy")
+  Class groovyClass = new GroovyClassLoader(this.class.classLoader).parseClass(sourceFile)
+  groovyClass.getDeclaredMethod("inheritRepositoriesFromBuildScript", Project).invoke(null, project)
+}
+
+apply plugin: "java-gradle-plugin"
+apply from: "../servicetalk-gradle-plugin-internal/plugin-config.gradle"
+
+sourceSets {
+  main {
+    groovy {
+      srcDir "../servicetalk-gradle-plugin-internal/src/main/groovy"
+    }
+    resources {
+      srcDir "../servicetalk-gradle-plugin-internal/src/main/resources"
+    }
+  }
+}

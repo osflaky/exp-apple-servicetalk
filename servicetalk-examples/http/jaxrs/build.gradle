@@ -1,0 +1,56 @@
+/*
+ * Copyright © 2019, 2021-2022 Apple Inc. and the ServiceTalk project authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+buildscript {
+  dependencies {
+    classpath "com.google.protobuf:protobuf-gradle-plugin:$protobufGradlePluginVersion"
+  }
+}
+
+apply plugin: "java"
+apply plugin: "com.google.protobuf"
+apply from: "../../gradle/idea.gradle"
+
+dependencies {
+  // * To use with Jersey 3.0, replace the version with $jersey3VersionEE9
+  // * To use with Jersey 3.1, replace the version with $jersey3VersionEE10
+  implementation platform("org.glassfish.jersey:jersey-bom:$jerseyVersion")
+
+  implementation project(":servicetalk-annotations")
+  // We could use jersey-media-json-jackson instead. Using servicetalk-data-jackson-jersey allows us to avoid the
+  // input stream adaptation that kicks in with out-of-the-box body readers and also allows accepting/returning
+  // Single<Pojo> and Publisher<Pojo> from resource methods.
+
+  // * To use with Jersey 3.0, replace the below *-jersey dependencies with *-jersey3-jakarta9
+  // * To use with Jersey 3.1, replace the below *-jersey dependencies with *-jersey3-jakarta10
+  implementation project(":servicetalk-data-jackson-jersey")
+  implementation project(":servicetalk-data-protobuf-jersey")
+  implementation project(":servicetalk-http-netty")
+  implementation project(":servicetalk-http-router-jersey")
+  implementation project(":servicetalk-data-protobuf") // only for ProtobufClient
+  implementation "com.google.protobuf:protobuf-java:$protobufVersion"
+  implementation "org.glassfish.jersey.media:jersey-media-multipart"
+  implementation "org.slf4j:slf4j-api:$slf4jVersion"
+
+  runtimeOnly "org.apache.logging.log4j:log4j-slf4j-impl:$log4jVersion"
+  runtimeOnly "org.glassfish.jersey.inject:jersey-hk2"
+}
+
+protobuf {
+  protoc {
+    artifact = "com.google.protobuf:protoc:$protobufVersion"
+  }
+}
